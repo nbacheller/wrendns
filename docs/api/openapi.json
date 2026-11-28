@@ -6326,6 +6326,79 @@
         }
       }
     },
+    "/api/v1/dns-providers/{name}/verify": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Verify the delegation CNAME of a `delegated` provider.",
+        "description": "CLD-904 (T36.10b step b5, ADR-1115). For each location whose domain is in the provider's zone the\nnode asks the zone's own authoritative name servers (found through the configured upstreams, never\nits own local data or cache) whether `_acme-challenge.<slug>.<domain>` is a CNAME to\n`<slug>.<validation zone>`. Every name server must answer with authority and with exactly that\ntarget. The answer lists each record with the verdict and the reason; a failure is a health\nreason only and changes no DNS answer. Nothing is written anywhere. It runs on the node asked.\nAdmin only, never for agents.",
+        "operationId": "verify_dns_provider",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The provider's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Each record with its verdict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DnsProviderVerifyResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an admin can verify a DNS provider (agents never).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No DNS provider by that name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entry is not a `delegated` provider, or it is held back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This node has no upstream to find the name servers through.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dnssec-settings/default": {
       "put": {
         "tags": [
@@ -8277,6 +8350,99 @@
           },
           "429": {
             "description": "Too many failed confirmations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guarded/pending/{id}/confirm-relay": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Confirms a pending `listen` change on another node through the primary.",
+        "description": "For the admin whose browser cannot open the node's own web UI (its API listens on loopback or a\ncluster-only network, or the address is behind a shared Service). The primary passes the\nconfirm on to the node over the cluster channel with a short-lived assertion of the admin's\nidentity, bound to the change; the node checks it itself and still needs its own DNS probes to\nanswer, exactly as for a direct confirm. Admin session only, with the change's single-use\n`confirmToken` in the body as well (a stolen session alone cannot do it): 403 `agent_not_allowed`\nfor agent tokens, 403 `reauth_required` for other tokens, operators and viewers 403. Only the\nprimary relays (a replica answers 421 `not_primary`) and only for `listen`, never for the primary\nitself or a standalone node, and never for `api-address`, `api-tls`, `trusted-proxies` or any other\nrow (403 `relay_refused`, with the reason). A member whose build does not know the relay is 409\n`upgrade_required` naming it. A weakening change needs a sign-in within the last 10 minutes (403\n`reauth_required`). Audited as `settings.guarded_confirm_relayed` on the primary, before the relay\nis sent and after, and as `settings.guarded` with `confirmedVia: \"primary\"` on the node. No MCP tool.",
+        "operationId": "guarded_confirm_relay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The pending change's ID, as the apply answered it.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardedRelayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed on the node.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardedResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not an admin session, an agent token, another token, a weakening change without a recent sign-in, or the relay was refused (`relay_refused`: the reason is in the detail; the window runs on).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This primary forwarded no change under that ID, or it has rolled back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The member's build does not know the relay (`upgrade_required`), or the node could not record the change (`primary_unreachable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Ask the primary: only it relays a confirm.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests, or too many failed confirmations from this session.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17631,6 +17797,13 @@
             "type": "string",
             "description": "The address the API listens on (`[api] listen`)."
           },
+          "publicUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "REQ: API-902, API-901 (T27.14g, ADR-1116) - `[api] public_url` as in force now: the address the\nnode announces as its web UI and API, in place of the one it works out."
+          },
           "scheme": {
             "type": "string",
             "description": "`https` when `[api] tls` is set (the node serves HTTPS itself), else `http`."
@@ -21435,6 +21608,7 @@
           "guarded_change_pending",
           "preview_stale",
           "primary_unreachable",
+          "relay_refused",
           "would_disconnect_you",
           "would_lock_out_admins",
           "no_supervisor",
@@ -22660,6 +22834,82 @@
           }
         }
       },
+      "DnsProviderDelegation": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5, ADR-1115) - the delegation of a `delegated` provider: the\nprovider that holds the validation zone and the CNAME records the operator creates by hand at\nthe DNS host, each with this node's latest check.",
+        "required": [
+          "validationProvider",
+          "records"
+        ],
+        "properties": {
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderDelegationRecord"
+            },
+            "description": "The CNAME records to create, one per location in the zone; one template with `<slug>` when\nno location is in the zone yet."
+          },
+          "validationProvider": {
+            "type": "string",
+            "description": "The provider entry that takes the challenge TXT (`delegated_to`)."
+          },
+          "validationZone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That provider's zone (absent when the entry it names is missing)."
+          }
+        }
+      },
+      "DnsProviderDelegationRecord": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5) - one `_acme-challenge` CNAME to create at the DNS host, and\nwhether this node has verified it at the zone's authoritative servers.",
+        "required": [
+          "name",
+          "target"
+        ],
+        "properties": {
+          "checkedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When that check ran, Unix seconds.",
+            "minimum": 0
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The location it is for; absent for the template shown before any location uses the zone."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name to create the CNAME at: `_acme-challenge.<slug>.<domain>` (no trailing dot)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, from the latest check on this node."
+          },
+          "target": {
+            "type": "string",
+            "description": "What it points to: `<slug>.<validation zone>` (no trailing dot)."
+          },
+          "verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` verified, `false` not verified; absent when this node has not checked it yet."
+          }
+        }
+      },
       "DnsProviderEntry": {
         "type": "object",
         "description": "REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings\n(the credential as a stored secret's name, never a value), where it comes from, and its state.",
@@ -22689,6 +22939,17 @@
           "definition": {
             "description": "The settings in effect: the `[[dns_provider]]` fields as JSON, with `credential_ref` the\nname of a stored secret."
           },
+          "delegation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DnsProviderDelegation",
+                "description": "A `delegated` entry only: the record to create at its DNS host and whether this node has\nverified it (T36.10b step b5, ADR-1115)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "detail": {
             "type": "string",
             "description": "The sentence that goes with `state`."
@@ -22703,7 +22964,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`azure_dns`, `cloudflare`, `route53` or `rfc2136`."
+            "description": "`azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated`."
           },
           "name": {
             "type": "string"
@@ -22919,6 +23180,34 @@
           "supported": {
             "type": "boolean",
             "description": "False when this build has no provider code for the entry (`error` says so; every real kind has code)."
+          }
+        }
+      },
+      "DnsProviderVerifyResult": {
+        "type": "object",
+        "description": "REQ: CLD-904 (T36.10b step b5) - the answer of `POST /api/v1/dns-providers/{name}/verify`.",
+        "required": [
+          "ok",
+          "records"
+        ],
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A sentence for the card (for example, that no location uses the zone yet so nothing was\nchecked)."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Every record is verified."
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DnsProviderDelegationRecord"
+            },
+            "description": "Each record with its verdict and reason."
           }
         }
       },
@@ -24713,6 +25002,13 @@
             ],
             "description": "REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on, as the node announces\nit; absent from an older node and from one that cannot name an address. A card links to the\nnode's own address from it (a guarded change is confirmed on the node itself)."
           },
+          "confirmRelay": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "REQ: API-904 (T27.14g) - the node's build can take the confirm the primary relays (the\n`guarded_confirm_relay` gate feature), as the primary sees it; absent for the node answering\nand from an older build. The card offers \"Confirm through the primary\" only for a node that\nsays `true`."
+          },
           "confirmWindowSecs": {
             "type": "integer",
             "format": "int32",
@@ -25049,6 +25345,20 @@
             "description": "`waiting` (no probe has finished yet), `answered`, `refused_by_gate` (the gate's own\nrefusal, the expected answer on a gated listener) or `no_answer`."
           }
         }
+      },
+      "GuardedRelayRequest": {
+        "type": "object",
+        "description": "REQ: API-904 (T27.14g) - the body of `POST /api/v1/guarded/pending/{id}/confirm-relay`.",
+        "required": [
+          "confirmToken"
+        ],
+        "properties": {
+          "confirmToken": {
+            "type": "string",
+            "description": "The single-use token the apply answered with. Required: the admin's session alone cannot\nconfirm through the primary, so a stolen session cookie is not enough."
+          }
+        },
+        "additionalProperties": false
       },
       "GuardedResult": {
         "type": "object",

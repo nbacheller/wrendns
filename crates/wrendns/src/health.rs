@@ -277,6 +277,26 @@ pub(crate) fn dns_provider_reasons(failures: &[(String, String)]) -> Vec<HealthR
         .collect()
 }
 
+/// REQ: CLD-904 (T36.10b step b5, ADR-1115) - a delegated DNS provider whose CNAME was checked on this
+/// node and is not verified: degraded and nothing more, DNS answers are unaffected. `failures` are
+/// the entry names with the record and the reason.
+pub(crate) fn dns_delegation_reasons(failures: &[(String, String)]) -> Vec<HealthReason> {
+    failures
+        .iter()
+        .map(|(name, why)| {
+            reason(
+                DEGRADED,
+                "dns_provider_delegation_unverified",
+                format!(
+                    "the delegation of the DNS provider `{name}` is not verified: {}. DNS answers are unaffected",
+                    why.trim_end().trim_end_matches('.')
+                ),
+                "#/settings?tab=dns-providers",
+            )
+        })
+        .collect()
+}
+
 /// REQ: DNS-906 (T40.5) - a root key in its add hold-down, or a trust anchor the root revoked:
 /// degraded, DNS unaffected. `items` are `Rollover::reasons`.
 pub(crate) fn anchor_reasons(items: Vec<(&'static str, String)>) -> Vec<HealthReason> {

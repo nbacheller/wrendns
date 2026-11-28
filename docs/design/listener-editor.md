@@ -323,6 +323,12 @@ force.
 
 ### 2.7 A node with no browser at its API: the relayed confirm (owner decision, 2026-11-26)
 
+*Built in T27.14g (ADR-1116, Proposed 2026-11-28), with two differences from this section: the browser's `no-cors`
+reachability test is not built (the page's content security policy allows connections to its own origin only, and
+was not widened), so the relay is a second, closed-by-default choice on the countdown for any node that takes it
+rather than something offered after a failed test; and the primary signs the assertion over its own domain prefix.
+The rest below is as built; the node's address is the member's announced one, or its `[api] public_url`.*
+
 **The decision.** For a `listen` change, and for no other row, the primary may pass the admin's confirm
 on to the target node, carrying the admin's signed identity. This amends ADR-956 §5, which rejected a
 primary confirming for another node (and the sentence of ADR-914 that the confirmation must reach that

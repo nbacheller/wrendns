@@ -9,6 +9,8 @@
   // picked (T27.14g0, owner decision 2026-11-27) the card shows that node's values, read through the primary
   // (admin only), and stages changes for it; the confirm of such a change is done on that node itself, through
   // the address it announces. An older member cannot report them: the card says so and changes nothing.
+  // The public address (T27.14g, ADR-1116) is that node's own setting too: the address it announces as its web UI,
+  // in place of the one it works out (NAT, a load balancer's name); the member list and the confirm link use it.
   import { onMount } from 'svelte';
   import type { S } from '../api';
   import { guarded, loadNodeApi, nodeApi, nodeUrl, refreshGuarded, targetNode } from '../guarded.svelte';
@@ -25,6 +27,7 @@
   // node's: this node's from the system information, another's from the per-node read (an older member has none).
   const redirectRow = $derived(setting(guarded.node, 'api-http-redirect'));
   const proxiesRow = $derived(setting(guarded.node, 'trusted-proxies'));
+  const publicRow = $derived(setting(guarded.node, 'api-public-url'));
   const view = $derived<S['ApiInfo'] | null | undefined>(target ? nodeApi.data?.api : web);
   const nodeUnread = $derived(!!target && !nodeApi.data);
   const url = $derived(nodeUrl(target));
@@ -34,6 +37,22 @@
   };
 
   let redirect = $state('');
+  // The address this node announces now (from the listing), and the one set here (from the node's own values).
+  const announced = $derived(guarded.node?.apiUrl ?? '');
+  const setUrl = $derived(view?.publicUrl ?? '');
+  let publicUrl = $state('');
+  $effect(() => {
+    publicUrl = setUrl;
+  });
+  // Mirrors the server's rule (the server checks again): http or https, a name or an address with an optional
+  // port, no user name or password, no path; empty clears it.
+  function urlOk(v: string): boolean {
+    if (v === '') return true;
+    const m = /^https?:\/\/(\[[0-9a-f:.]+\]|[A-Za-z0-9._-]+)(?::(\d{1,5}))?\/?$/i.exec(v);
+    return !!m && v.length <= 255 && (m[2] === undefined || (Number(m[2]) >= 1 && Number(m[2]) <= 65535));
+  }
+  const urlBad = $derived(!urlOk(publicUrl.trim()));
+  const urlDirty = $derived(publicUrl.trim().replace(/\/$/, '') !== setUrl.replace(/\/$/, ''));
   const inForce = $derived(JSON.stringify(view?.trustedProxies ?? []));
   let draft = $state<string[]>([]);
   let typed = $state('');
@@ -81,6 +100,19 @@
     <GuardedChange id="api-http-redirect" label="HTTP to HTTPS redirect" value={{ address: redirect.trim() }} node={target} disabled={(redirectRow?.setByFile ?? true) || nodeUnread} onDone={changed} />
   </div>
   {#if view}
+    <div data-testid="api-public-url" data-setting="api.public_url">
+      <h3>{publicRow?.label ?? 'Public web UI address'}<HelpButton id="api-public-url" />{#if publicRow?.setByFile} <span class="muted small" data-testid="api-public-url-file">(set by file)</span>{/if}</h3>
+      <p class="small muted">The address people open {target ?? 'this node'}'s web UI at, when it is not the one the node works out: a node behind NAT, or a load balancer's name. The cluster's node list and the link that confirms a guarded change on this node use it. Nothing listens on it.</p>
+      <p class="small" data-testid="api-public-url-announced">
+        {#if announced}{target ?? 'This node'} announces <span class="mono">{announced}</span> ({setUrl ? 'set here' : 'worked out by the node'}).{:else}{target ?? 'This node'} announces no address: it is bound to a wildcard or loopback address and has no cluster address to borrow a host from.{/if}
+      </p>
+      {#if !publicRow}<p class="small muted" data-testid="api-public-url-unknown">{target ?? 'This node'}'s build does not know the public address setting, so it is left as it is. Update the node to set it.</p>{/if}
+      <label class="small">Public address (empty: let the node work it out)
+        <input bind:value={publicUrl} placeholder="https://pi-a.example.com" aria-label="Public web UI address" aria-invalid={urlBad} disabled={(publicRow?.setByFile ?? true) || nodeUnread} data-testid="api-public-url-input" />
+      </label>
+      {#if urlBad}<p class="small" role="alert" data-testid="api-public-url-bad">Not a plain web address: use http:// or https://, a name or an address and an optional port, with no user name, password or path (for example https://pi-a.example.com).</p>{/if}
+      <GuardedChange id="api-public-url" label="Public web UI address" value={{ url: publicUrl.trim() }} node={target} disabled={!urlDirty || urlBad || (publicRow?.setByFile ?? true) || nodeUnread} onDone={changed} />
+    </div>
     <div data-testid="trusted-proxies" data-setting="api.trusted_proxies">
       <h3>Trusted proxies<HelpButton id="trusted-proxies" />{#if proxiesRow?.setByFile} <span class="muted small" data-testid="trusted-proxies-file">(set by file)</span>{/if}</h3>
       <p class="small muted">Hosts whose <code>X-Forwarded-For</code> the node believes: it takes the client's address from there (sign-in lockouts, the break-glass networks and the audit log). List only your own proxy or ingress.</p>

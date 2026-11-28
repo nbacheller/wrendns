@@ -41,6 +41,9 @@
   // node picked in the Guarded settings picker, which a card on another node does not follow.
   const target = $derived(node ? (guarded.nodes.find((x) => x.node === node) ?? null) : (guarded.nodes[0] ?? null));
 
+  /** The change is for another node than this one (the first in the listing). */
+  const remote = $derived(!!node && !!guarded.nodes[0] && node !== guarded.nodes[0].node);
+
   type Step = 'idle' | 'review' | 'working' | 'pending' | 'done' | 'restarting';
   let step = $state<Step>('idle');
   let pv = $state<S['GuardedPreview'] | null>(null);
@@ -309,6 +312,34 @@
     }
   });
 
+  // REQ: API-904 (T27.14g; design 2.7) - the confirm of a `listen` change on another node normally happens at
+  // that node's own web UI, which is the stronger proof and stays the first choice. The design asks the browser to
+  // test the node's address first (a no-cors request); the page's content security policy allows connections to
+  // its own origin only (`connect-src 'self'`) and is not widened for this, so the test cannot be made here.
+  // Instead the countdown keeps the direct link and offers the relay as a second, closed-by-default choice (open
+  // when the node announced no address), for a node whose build takes it (the primary reports that). The node
+  // judges every relay itself.
+  const relayable = $derived(remote && id === 'listen' && target?.confirmRelay === true);
+
+  async function confirmRelayed() {
+    if (!result?.pendingId || !result.confirmToken) return;
+    busy = true;
+    error = null;
+    try {
+      const r = await api.guardedConfirmRelay(result.pendingId, { confirmToken: result.confirmToken });
+      finalKind = 'ok';
+      finalText = `Confirmed through the primary. The change is kept on ${r.node}: its own test question to each new listener was answered. That does not show that your devices, or this browser, can reach ${r.node}.`;
+      step = 'done';
+      stop();
+      void refreshGuarded();
+      onDone?.();
+    } catch (e) {
+      error = e;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function cancelPending() {
     if (!result?.pendingId) return;
     busy = true;
@@ -347,7 +378,6 @@
   // REQ: API-902 (T27.14g0) - a change for another node is confirmed on that node itself (the primary cannot
   // confirm for it: that relay is a later task). The link goes to the address the node announces, carrying the
   // single-use token in its fragment; with no announced address the card says so.
-  const remote = $derived(!!node && !!guarded.nodes[0] && node !== guarded.nodes[0].node);
   const nodeLink = $derived.by(() => {
     if (!remote || !result?.pendingId) return '';
     const base = nodeUrl(node);
@@ -393,7 +423,22 @@
             </li>
           {/each}
         </ul>
-        <p class="small muted">You confirm this on this page, once the node's own test query to each new listener is answered. That proves the listener works on this machine, not that your devices can reach it: a firewall, your router or a container's published ports may still be in the way.</p>
+        {#if remote}
+          <p class="small muted" data-testid="guarded-confirm-at">
+            You confirm this at {#if nodeUrl(node)}<code>{nodeUrl(node)}</code>{:else}{node}'s own web UI (it has not announced an address){/if}, once the node's own test query to each new listener is answered.
+          </p>
+          {#if target?.confirmRelay === true}
+            <p class="small muted" data-testid="guarded-relay-note">
+              If your browser can't open {nodeUrl(node) ? nodeUrl(node) : `${node}'s web UI`} when the time comes, you can confirm through the primary instead; the node still has to answer its own test queries first.
+            </p>
+          {:else}
+            <div class="notice warn small" role="status" data-testid="guarded-relay-unavailable">
+              {node} cannot take a confirm passed on by the primary (an older build, or this page is not on the primary): you must confirm at its own address{nodeUrl(node) ? '' : ', which it has not announced'}, or the change rolls back when the window ends.
+            </div>
+          {/if}
+        {:else}
+          <p class="small muted">You confirm this on this page, once the node's own test query to each new listener is answered. That proves the listener works on this machine, not that your devices can reach it: a firewall, your router or a container's published ports may still be in the way.</p>
+        {/if}
       {/if}
       {#if pv.seenClient}
         <p class="small" data-testid="guarded-seen">Today the server sees you as <strong>{pv.seenClient}</strong>.</p>
@@ -485,6 +530,14 @@
       {:else}
         <button class="primary" disabled={busy || probeFailing} onclick={confirmHere} data-testid="guarded-confirm-here">{busy ? 'Working…' : 'Confirm'}</button>
       {/if}
+      {#if relayable}
+        <details class="relay small" open={!nodeLink} data-testid="guarded-relay">
+          <summary>Can't open {node}'s web UI?</summary>
+          <p>The primary can pass your confirm on to {node} instead: it signs a request that lasts 30 seconds and is good for this change only, and sends it with this change's one-time token. {node} checks it itself and still asks its own test question to every new listener first, so a listener that does not answer is not kept.</p>
+          <p class="muted">It does not show that your devices, or this browser, can reach {node}, and it is recorded in the audit log on both nodes as confirmed through the primary. Opening {node} and confirming there is the stronger proof.</p>
+          <button class="primary" disabled={busy || !result.confirmToken} onclick={confirmRelayed} data-testid="guarded-relay-confirm">{busy ? 'Working…' : 'Confirm through the primary'}</button>
+        </details>
+      {/if}
       <button disabled={busy} onclick={cancelPending} data-testid="guarded-cancel">Cancel the change</button>
       <ErrorNote {error} />
     </section>
@@ -571,5 +624,11 @@
   .button {
     display: inline-block;
     text-decoration: none;
+  }
+  .relay {
+    margin: var(--space-2) 0;
+  }
+  .relay summary {
+    cursor: pointer;
   }
 </style>

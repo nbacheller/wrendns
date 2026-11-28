@@ -1146,6 +1146,57 @@ fn api_902_a_member_without_the_feature_announces_no_url_and_is_not_asked() {
     });
 }
 
+/// REQ: API-904 (T27.14g), CLU-010 - a mixed cluster over the real channel: a member announces the
+/// `guarded_confirm_relay` feature in its Hello, and a member of an older build (one that lacks it
+/// in its feature list) is seen as not knowing it, so the primary refuses to send it a relayed
+/// confirm. The URL it announces (`api_url`) is a plain string in the same Hello: an older member's
+/// reading of the new feature changes nothing about it.
+#[test]
+fn api_904_a_member_announces_the_relay_feature_and_an_older_one_does_not() {
+    use wrendns_cluster::gate::{Feature, knows};
+    finish_within(|| {
+        let rt = multi_thread_runtime(2);
+        // This build: announced, and the member list the guarded engine reads says so.
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of_announcing_url(
+            anchors_handler(),
+            None,
+            "https://192.0.2.10:8443",
+        ));
+        let features = replica
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| m.features)
+            .expect("the primary is a member");
+        assert!(knows(&features, Feature::GuardedConfirmRelay));
+        assert!(knows(&features, Feature::MemberApiAddress));
+        let _ = stop.send(true);
+        drop((replica, primary, dirs));
+        // An older build: no `guarded_confirm_relay` in its list (it may still know the address).
+        let old: Vec<String> = wrendns_cluster::gate::own_features()
+            .into_iter()
+            .filter(|f| f != Feature::GuardedConfirmRelay.name())
+            .collect();
+        let (replica, primary, stop, dirs) = rt.block_on(replica_of_announcing_url(
+            anchors_handler(),
+            Some(old),
+            "https://192.0.2.10:8443",
+        ));
+        let (url, features) = replica
+            .members()
+            .into_iter()
+            .find(|m| m.primary)
+            .map(|m| (m.api_url, m.features))
+            .expect("the primary is a member");
+        assert!(!knows(&features, Feature::GuardedConfirmRelay));
+        assert!(knows(&features, Feature::MemberApiAddress));
+        assert_eq!(url, "https://192.0.2.10:8443");
+        let _ = stop.send(true);
+        rt.shutdown_background();
+        drop((replica, primary, dirs));
+    });
+}
+
 /// REQ: CLD-904, CLD-919, CLU-002 (T36.10b b3) - a replica that can't reach its primary refuses a
 /// DNS provider action with 503 instead of running it: nothing is written to its own ledger.
 #[test]

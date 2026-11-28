@@ -36,6 +36,9 @@ pub(crate) struct Member {
     /// REQ: API-902 (T27.14g0) - its build announces the per-node read of its web UI and API settings
     /// (the `MemberApiAddress` gate feature); an older member does not know it.
     pub(crate) node_api: bool,
+    /// REQ: API-904 (T27.14g) - its build can take the confirm the primary relays (the
+    /// `GuardedConfirmRelay` gate feature); an older member cannot decode the operation.
+    pub(crate) relay: bool,
 }
 
 /// A socket kept open for the confirmation window's proof. Dropping it closes it.
@@ -189,6 +192,17 @@ pub(crate) trait Host: Send + Sync + 'static {
         let bytes = a.canonical();
         let sig = self.sign(&bytes)?;
         Some(Signed {
+            assertion: a.clone(),
+            sig,
+        })
+    }
+    /// REQ: API-904 (T27.14g) - a signed relayed-confirm assertion: only the primary makes one.
+    fn relay_assertion(
+        &self,
+        a: &super::assertion::RelayAssertion,
+    ) -> Option<super::assertion::SignedRelay> {
+        let sig = self.sign(&a.canonical())?;
+        Some(super::assertion::SignedRelay {
             assertion: a.clone(),
             sig,
         })

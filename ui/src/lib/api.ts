@@ -71,6 +71,9 @@ const READABLE: Record<string, (detail: string) => string> = {
   agent_not_allowed: () => 'Guarded settings are for people: an admin changes them here, or in the configuration file.',
   would_disconnect_you: () => 'That change would cut you off: the node would have no API or DNS listener, or lose the one you are using.',
   primary_unreachable: () => "This node can't reach the cluster's primary to record the change, so it wasn't kept.",
+  // REQ: API-904 (T27.14g) - the server's reason is the sentence (a failed test query names the address); the
+  // window runs on, so the admin can try again or confirm at the node itself.
+  relay_refused: (d) => `The confirm through the primary was refused: ${d}. The change is still pending and rolls back when the time runs out.`,
   not_primary: (d) => `Only the primary forwards a change for another node. ${d}`,
   lists_not_here: () => "This node doesn't download lists. Ask a node that does.",
   // REQ: DSC-004 (T25.6) — the SNMP Test runs on the designated node.
@@ -365,6 +368,9 @@ export const api = {
   guardedPending: (pending: string) => get<S['GuardedPendingView']>(`/guarded/pending/${encodeURIComponent(pending)}`),
   // REQ: API-902, API-901 (T27.14g0) - another node's own web UI and API settings and listeners (admin).
   guardedNodeApi: (node: string) => get<S['GuardedNodeApi']>(`/guarded/nodes/${encodeURIComponent(node)}/api`),
+  // REQ: API-904 (T27.14g) - the primary passes the admin's confirm of a `listen` change on another node on to it.
+  guardedConfirmRelay: (pending: string, b: { confirmToken: string }) =>
+    post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/confirm-relay`, b),
   guardedCancel: (pending: string) => post<S['GuardedResult']>(`/guarded/pending/${encodeURIComponent(pending)}/cancel`),
   // REQ: OPS-004 — "Check now" (admin).
   checkUpdates: () => post<S['UpdateStatus']>('/system/update-check'),
@@ -643,6 +649,9 @@ export const api = {
   // ends dry run), read its record sets with who owns each, and adopt one (admins; never an agent).
   testDnsProvider: (name: string) =>
     call<S['DnsProviderTestResult']>('POST', `/dns-providers/${encodeURIComponent(name)}/test`),
+  // REQ: CLD-904 (T36.10b step b5) — verify a delegated provider's CNAME at the zone's authoritative servers.
+  verifyDnsProvider: (name: string) =>
+    call<S['DnsProviderVerifyResult']>('POST', `/dns-providers/${encodeURIComponent(name)}/verify`),
   dnsProviderRecords: (name: string) =>
     get<S['DnsProviderRecords']>(`/dns-providers/${encodeURIComponent(name)}/records`),
   adoptDnsRecord: (name: string, record: { name: string; recordType: string }) =>

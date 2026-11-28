@@ -1247,35 +1247,41 @@ pub(crate) fn recent_guarded(auth: &wrendns_api::auth::Auth, now: u64) -> Vec<(S
         .filter(|e| e.ts >= since)
         .filter_map(|e| {
             let d: serde_json::Value = serde_json::from_str(&e.detail).unwrap_or_default();
-            let setting = d["setting"].as_str().unwrap_or("a setting").to_owned();
-            let node = d["node"].as_str().unwrap_or("this node");
-            let what = match e.action.as_str() {
-                "settings.guarded" => format!(
-                    "{} {} the guarded setting `{setting}` on {node}{}",
-                    e.actor,
-                    match d["outcome"].as_str() {
-                        Some("staged") => "staged a change to",
-                        Some("confirmed") => "confirmed a change to",
-                        _ => "changed",
-                    },
-                    if d["weakening"].as_bool() == Some(true) {
-                        " (it weakens security)"
-                    } else {
-                        ""
-                    }
-                ),
-                "settings.guarded_rolled_back" => format!(
-                    "the change to the guarded setting `{setting}` on {node} was rolled back ({})",
-                    d["reason"].as_str().unwrap_or("unknown")
-                ),
-                "settings.guarded_restart" => {
-                    format!("{} restarted {node} to apply guarded changes", e.actor)
-                }
-                _ => return None,
-            };
+            let what = guarded_summary(&e.action, &e.actor, &d)?;
             Some((format!("{GUARDED_PREFIX}{}", e.seq), what))
         })
         .collect()
+}
+
+/// REQ: API-902, API-904 - the sentence an alert carries for one `settings.guarded*` record: who, what
+/// and where, never a value. A confirm the primary relayed says so (T27.14g).
+fn guarded_summary(action: &str, actor: &str, d: &serde_json::Value) -> Option<String> {
+    let setting = d["setting"].as_str().unwrap_or("a setting");
+    let node = d["node"].as_str().unwrap_or("this node");
+    Some(match action {
+        "settings.guarded" => format!(
+            "{actor} {} the guarded setting `{setting}` on {node}{}",
+            match d["outcome"].as_str() {
+                Some("staged") => "staged a change to",
+                Some("confirmed") if d["confirmedVia"].as_str() == Some("primary") => {
+                    "confirmed through the primary a change to"
+                }
+                Some("confirmed") => "confirmed a change to",
+                _ => "changed",
+            },
+            if d["weakening"].as_bool() == Some(true) {
+                " (it weakens security)"
+            } else {
+                ""
+            }
+        ),
+        "settings.guarded_rolled_back" => format!(
+            "the change to the guarded setting `{setting}` on {node} was rolled back ({})",
+            d["reason"].as_str().unwrap_or("unknown")
+        ),
+        "settings.guarded_restart" => format!("{actor} restarted {node} to apply guarded changes"),
+        _ => return None,
+    })
 }
 
 /// `scheme://host[:port]` of a URL, without its user information or path; anything else as is.
@@ -1445,6 +1451,28 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // REQ: API-904 (T27.14g) - the alert for a confirm the primary relayed says so, and names no value.
+    #[test]
+    fn api_904_the_alert_says_a_confirm_came_through_the_primary() {
+        let direct =
+            serde_json::json!({"setting": "listen", "node": "pi-b", "outcome": "confirmed"});
+        let relayed = serde_json::json!({
+            "setting": "listen", "node": "pi-b", "outcome": "confirmed",
+            "confirmedVia": "primary", "relayedBy": "pi-a", "relayNonce": "ab", "weakening": true,
+        });
+        assert_eq!(
+            guarded_summary("settings.guarded", "alice via pi-a", &direct).unwrap(),
+            "alice via pi-a confirmed a change to the guarded setting `listen` on pi-b"
+        );
+        assert_eq!(
+            guarded_summary("settings.guarded", "alice via pi-a", &relayed).unwrap(),
+            "alice via pi-a confirmed through the primary a change to the guarded setting `listen` on pi-b (it weakens security)"
+        );
+        // The primary's own relay record and a refusal are not alert events.
+        assert!(guarded_summary("settings.guarded_confirm_relayed", "alice", &relayed).is_none());
+        assert!(guarded_summary("settings.guarded_refused", "alice", &relayed).is_none());
+    }
 
     // REQ: CLU-014 (owner 2026-10-19) — a drill report goes out once (a one-off, like a failed
     // rollout), saying scheduled or not, the counts, coverage, and missing nodes.

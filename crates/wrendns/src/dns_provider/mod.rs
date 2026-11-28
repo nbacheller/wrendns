@@ -10,6 +10,9 @@
 //!   (T36.10b step b4): Azure DNS ([`azure`]) and Cloudflare ([`cloudflare`]) over the shared
 //!   [`http_json`] call, Route 53 ([`route53`]) and RFC 2136 ([`rfc2136`]). Only a test-only entry named
 //!   `nocode...` answers "no provider code for this kind yet".
+//! - **Delegation** ([`delegation`]): the `delegated` kind has no provider code at all. The operator
+//!   creates one CNAME at a DNS host with no usable API, and the node verifies it at the zone's own
+//!   authoritative servers (T36.10b step b5, ADR-1115).
 //! - **The fake** ([`fake`]): an in-memory zone for tests (and for the browser tests' build); never a
 //!   kind in the table.
 //! - **The engine** ([`engine`]): audit, dry run, the ownership ledger, per-entry rate limits and
@@ -20,6 +23,7 @@
 
 pub(crate) mod azure;
 pub(crate) mod cloudflare;
+pub(crate) mod delegation;
 pub(crate) mod engine;
 #[cfg(any(test, feature = "e2e"))]
 pub(crate) mod fake;

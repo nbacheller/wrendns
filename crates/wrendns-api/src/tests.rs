@@ -395,6 +395,7 @@ impl Backend for Fake {
                 certificate: Some("self-signed".into()),
                 trusted_proxies: vec!["10.0.0.0/8".into()],
                 http_redirect: Some("0.0.0.0:80".into()),
+                public_url: None,
             }),
             build: crate::model::BuildInfo {
                 version: "0.1.0-edge.60".into(),
@@ -2236,7 +2237,9 @@ async fn api_001_openapi_is_served_and_documents_every_route() {
     // 207 with CLD-904's /dns-providers/{name}/test and CLD-919's /dns-providers/{name}/records and
     // /dns-providers/{name}/records/adopt (T36.10b step b3).
     // 208 with API-902's GET /guarded/nodes/{node}/api (T27.14g0).
-    assert_eq!(paths.len(), 208);
+    // 209 with CLD-904's /dns-providers/{name}/verify (T36.10b step b5).
+    // 210 with API-904's POST /guarded/pending/{id}/confirm-relay (T27.14g).
+    assert_eq!(paths.len(), 210);
     for (path, ops) in paths {
         for (method, op) in ops.as_object().unwrap() {
             // AGT-001: every operation has a summary and a description for agents.

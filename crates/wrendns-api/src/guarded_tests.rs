@@ -14,6 +14,7 @@ const GUARDED_IDS: &[&str] = &[
     "api-address",
     "api-tls",
     "api-http-redirect",
+    "api-public-url",
     "listen-access",
     "dnstap-output",
     "trusted-proxies",
@@ -102,6 +103,7 @@ fn api_902_guarded_routes_not_in_mcp_or_plans() {
     paths.extend([
         "/api/v1/guarded/pending/p1/confirm".to_owned(),
         "/api/v1/guarded/pending/p1/cancel".to_owned(),
+        "/api/v1/guarded/pending/p1/confirm-relay".to_owned(),
     ]);
     for p in &paths {
         for m in [Method::POST, Method::PUT, Method::DELETE, Method::PATCH] {
@@ -359,6 +361,7 @@ fn api_902_problem_codes_and_statuses() {
         (Code::NotPrimary, 421, "not_primary"),
         (Code::AgentNotAllowed, 403, "agent_not_allowed"),
         (Code::ReauthRequired, 403, "reauth_required"),
+        (Code::RelayRefused, 403, "relay_refused"),
     ];
     for (code, status, name) in table {
         let p = Problem::new(code, "x");

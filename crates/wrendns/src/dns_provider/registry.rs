@@ -38,6 +38,9 @@ impl Handle {
 /// Why no provider could be made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BuildError {
+    /// A `delegated` entry has no account to call: the operator made one CNAME by hand and the
+    /// challenge is written by the provider it delegates to (ADR-1115).
+    Delegated,
     /// The entry has no code in this build. Only the test-only `nocode...` seam produces it; every
     /// real kind has code.
     #[cfg_attr(not(any(test, feature = "e2e")), allow(dead_code))]
@@ -47,6 +50,9 @@ pub(crate) enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Delegated => f.write_str(
+                "a delegated entry has no account of its own: the challenge is written by the provider it delegates to",
+            ),
             Self::NoCode(kind) => write!(f, "no provider code for the `{kind}` kind yet"),
         }
     }
@@ -83,6 +89,9 @@ pub(crate) fn build(
     cfg: &DnsProviderConfig,
     secret: Option<SecretValue>,
 ) -> Result<Handle, BuildError> {
+    if cfg.is_delegated() {
+        return Err(BuildError::Delegated);
+    }
     #[cfg(any(test, feature = "e2e"))]
     if super::fake::is_fake_name(cfg.name.as_str()) {
         return Ok(Handle {
@@ -126,7 +135,7 @@ pub(crate) fn build(
                     secret,
                 });
             }
-            DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 => {}
+            DnsProviderKind::Route53 | DnsProviderKind::Rfc2136 | DnsProviderKind::Delegated => {}
         }
     }
     // T36.10b step b4: every kind has code.
@@ -137,6 +146,7 @@ pub(crate) fn build(
         }
         DnsProviderKind::Route53 => Arc::new(super::route53::Route53::new(cfg, secret.as_ref())),
         DnsProviderKind::Rfc2136 => Arc::new(super::rfc2136::Rfc2136::new(cfg, secret.as_ref())),
+        DnsProviderKind::Delegated => return Err(BuildError::Delegated),
     };
     Ok(Handle { provider, secret })
 }

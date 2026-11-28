@@ -2477,6 +2477,11 @@ impl Backend for Federated {
         &self,
         op: wrendns_api::DnsProviderOp,
     ) -> BoxFuture<Result<serde_json::Value, Problem>> {
+        // REQ: CLD-904 (T36.10b step b5) - Verify is a read of the zone's authoritative servers and
+        // touches no ledger: it runs on the node asked, whatever its role.
+        if matches!(op.action, wrendns_api::DnsProviderAction::Verify) {
+            return self.local.dns_provider_op(op);
+        }
         // No local run on a replica, and none on a primary without its lease (the same routing as a
         // configuration write): the ledger is written only by the primary.
         if self.cluster.is_primary() {
@@ -3787,6 +3792,14 @@ impl Backend for Federated {
         token: Option<String>,
     ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
         self.local.guarded_confirm(caller, id, token)
+    }
+    fn guarded_confirm_relay(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        id: String,
+        token: String,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedResult, Problem>> {
+        self.local.guarded_confirm_relay(caller, id, token)
     }
     fn guarded_pending(
         &self,

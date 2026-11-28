@@ -650,8 +650,23 @@ fn settings_kinds_understood(
     cluster: &Cluster,
     primary: &str,
     kind: ManagedKind,
-    is_put: bool,
+    body: Option<&serde_json::Value>,
 ) -> Result<(), Problem> {
+    let is_put = body.is_some();
+    // REQ: CLD-904 (T36.10b step b5, ADR-1115) - a `delegated` provider goes only to a primary that
+    // announces the kind: an older one fails the body as an unknown variant.
+    if kind == ManagedKind::DnsProvider
+        && body.is_some_and(|b| b.get("kind").and_then(|k| k.as_str()) == Some("delegated"))
+    {
+        crate::upgrade_gate::enforce(
+            Some(cluster),
+            wrendns_cluster::gate::Feature::DnsProviderDelegation,
+        )
+        .map_err(|why| {
+            Problem::new(Code::UpgradeRequired, why)
+                .hint("Upgrade the member named, then make this change again.")
+        })?;
+    }
     if !matches!(
         kind,
         ManagedKind::Special
@@ -732,7 +747,7 @@ pub(crate) async fn managed(
     let kind = w.kind;
     if let Some(p) = &primary {
         markers_understood(&cluster, p, kind, w.body.as_ref())?;
-        settings_kinds_understood(&cluster, p, kind, w.body.is_some())?;
+        settings_kinds_understood(&cluster, p, kind, w.body.as_ref())?;
     }
     let mut c: ConfigChange = send(&cluster, primary, w.into()).await?;
     crate::redact::change(kind, &mut c);

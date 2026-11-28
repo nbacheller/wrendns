@@ -39,6 +39,7 @@ fn applier_for(id: &str) -> Option<Arc<dyn Applier>> {
         guarded::LISTEN_ACCESS => Some(Arc::new(ListenAccess)),
         guarded::LISTEN => Some(Arc::new(super::listen::Listen)),
         guarded::DNSTAP => Some(Arc::new(super::dnstap::Dnstap)),
+        guarded::API_PUBLIC_URL => Some(Arc::new(ApiPublicUrl)),
         guarded::TRUSTED_PROXIES => Some(Arc::new(super::trusted_proxies::TrustedProxies)),
         #[cfg(feature = "e2e")]
         "e2e-immediate" | "e2e-file" => Some(Arc::new(test::Immediate)),
@@ -135,6 +136,69 @@ impl Applier for HttpRedirect {
             && let Ok(a) = Self::address(value)
         {
             cfg.api.http_redirect = a;
+        }
+    }
+}
+
+/// REQ: API-902, API-901 (T27.14g, ADR-1116) - `api-public-url`: `{url}`, the address this node
+/// announces as its web UI and API in place of the one it works out, or empty or null for none.
+/// `immediate`: nothing listens on it. The same check as the file's (`check_public_url`): plain `http` or
+/// `https`, a host and an optional port, no credentials, no path, bounded.
+pub(crate) struct ApiPublicUrl;
+
+impl ApiPublicUrl {
+    /// The address in a value: `None` is none.
+    fn url(v: &Value) -> Result<Option<String>, Problem> {
+        let bad = |why: &str| Problem::new(Code::InvalidConfig, format!("`url`: {why}"));
+        match v.get("url") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+            Some(Value::String(s)) => {
+                let s = s.trim();
+                wrendns_config::check_public_url(s).map_err(|why| bad(&why))?;
+                Ok(Some(s.to_owned()))
+            }
+            Some(_) => Err(bad("must be text")),
+        }
+    }
+}
+
+impl Applier for ApiPublicUrl {
+    fn current(&self, cfg: &Config) -> Value {
+        serde_json::json!({"url": cfg.api.public_url.as_ref().map(|u| u.as_str().to_owned())})
+    }
+    fn check(&self, cx: &CheckCx<'_>) -> Result<Checked, Problem> {
+        let Some(url) = Self::url(cx.value)? else {
+            return Ok(Checked {
+                effect: format!(
+                    "Takes {}'s public address away: it announces the address it works out from its own settings again.",
+                    cx.node
+                ),
+                ..Checked::default()
+            });
+        };
+        let mut warnings = vec![
+            "Nothing checks that this address reaches the node. The member list and the link that confirms a guarded change on this node point to it, and the link carries a single-use token: use only a name you control."
+                .to_owned(),
+        ];
+        let node_tls = cx.cfg.api.tls.is_some();
+        if node_tls && url.to_ascii_lowercase().starts_with("http://") {
+            warnings.push(
+                "This node serves HTTPS itself, and the address says plain http://.".to_owned(),
+            );
+        }
+        Ok(Checked {
+            effect: format!(
+                "Announces {url} to the cluster as {}'s web UI and API address. Nothing listens on it: it only has to reach this node's API.",
+                cx.node
+            ),
+            warnings,
+            ..Checked::default()
+        })
+    }
+    fn overlay(&self, cfg: &mut Config, value: &Value) {
+        if let Ok(u) = Self::url(value) {
+            cfg.api.public_url = u.and_then(|s| wrendns_config::SafeString::new(s).ok());
         }
     }
 }
