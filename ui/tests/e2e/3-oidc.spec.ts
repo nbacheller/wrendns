@@ -1,7 +1,9 @@
 // REQ: API-004 — T3.6 acceptance: sign in through real Keycloak and Authentik (see
 // ../oidc/compose.yml). Runs when OIDC_E2E lists the providers, after 1-ui.spec.ts (which
 // creates the local admin). Each test uses a fresh browser context. REQ: API-016 (T23.10) — the
-// last block (OIDC providers in the UI) needs no provider and always runs.
+// last block (OIDC providers in the UI) needs no provider and always runs. Every test here carries
+// the tag @oidc: the oidc CI job runs `npm run test:e2e:oidc` (these tests plus the first-run test
+// in 1-ui.spec.ts that creates the admin), not the whole suite.
 import { expect, test, type Page } from '@playwright/test';
 
 // Without OIDC_E2E there are no real-provider tests (the loop below defines none).
@@ -40,7 +42,12 @@ async function signIn(page: Page, id: string, name: string, user: keyof typeof U
 for (const id of providers) {
   const name = id === 'keycloak' ? 'Keycloak' : 'Authentik';
 
-  test(`${id}: a mapped admin signs in and lands where they started`, async ({ browser }) => {
+  // A cold Authentik (its first request after start-up, on a busy runner) needs longer than the
+  // 30 s default for the provider's own pages; the steps below wait on those pages. Only the
+  // provider tests get this; the rest of the suite keeps the default.
+  const providerTest = { tag: '@oidc', timeout: 120_000 };
+
+  test(`${id}: a mapped admin signs in and lands where they started`, providerTest, async ({ browser }) => {
     const page = await browser.newPage();
     await signIn(page, id, name, 'alice');
     await expect(page.getByRole('heading', { name: 'Query log' })).toBeVisible({ timeout: 20_000 });
@@ -68,14 +75,14 @@ for (const id of providers) {
     await page.close();
   });
 
-  test(`${id}: groups decide the role`, async ({ browser }) => {
+  test(`${id}: groups decide the role`, providerTest, async ({ browser }) => {
     const page = await browser.newPage();
     await signIn(page, id, name, 'bob');
     await expect(page.locator('header .who .role')).toHaveText('viewer', { timeout: 20_000 });
     await page.close();
   });
 
-  test(`${id}: a user in no mapped group is refused with a reason`, async ({ browser }) => {
+  test(`${id}: a user in no mapped group is refused with a reason`, providerTest, async ({ browser }) => {
     const page = await browser.newPage();
     await signIn(page, id, name, 'carol');
     await expect(page.locator('.provider-error')).toContainText('group', { timeout: 20_000 });
@@ -103,7 +110,7 @@ async function adminPage(browser: import('@playwright/test').Browser): Promise<P
 
 const csrfOf = async (page: Page) => (await (await page.request.get('/api/v1/auth/status')).json()).csrfToken as string;
 
-test.describe('api_016 OIDC providers in the UI', () => {
+test.describe('api_016 OIDC providers in the UI', { tag: '@oidc' }, () => {
   test.describe.configure({ mode: 'serial' });
 
   test('api_016 add an OIDC provider from the UI', async ({ browser }) => {

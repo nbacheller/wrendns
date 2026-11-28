@@ -68,7 +68,8 @@ async function signInSent(user: string, pass: string) {
 // REQ: API-005 (ADR-157) — the dashboard's top lists are plain sections, found by their heading.
 const listOf = (title: string) => page.locator('section').filter({ has: page.getByRole('heading', { name: new RegExp(`^${title}`) }) });
 
-test('first run: the setup token creates the admin', async () => {
+// Tagged @oidc: the oidc CI job needs the admin this creates (see 3-oidc.spec.ts) and nothing else here.
+test('first run: the setup token creates the admin', { tag: '@oidc' }, async () => {
   await page.goto('/');
   const welcome = page.getByRole('heading', { name: 'Welcome to WrenDNS' });
   const signInHeading = page.getByRole('heading', { name: 'Sign in' });
