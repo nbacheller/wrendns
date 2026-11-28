@@ -42,6 +42,10 @@ pub enum DnsProviderKind {
     Route53,
     /// RFC 2136 dynamic update, signed with TSIG (RFC 8945), for any self-run authoritative server.
     Rfc2136,
+    /// A DNS host with no usable API (`GoDaddy` and others, ADR-1084): nothing is stored for it. The
+    /// operator creates one `_acme-challenge` CNAME there by hand, and `delegated_to` names the
+    /// provider entry whose zone takes the challenge TXT (ADR-1115). There is no `godaddy` kind.
+    Delegated,
 }
 
 impl DnsProviderKind {
@@ -53,6 +57,7 @@ impl DnsProviderKind {
             Self::Cloudflare => "cloudflare",
             Self::Route53 => "route53",
             Self::Rfc2136 => "rfc2136",
+            Self::Delegated => "delegated",
         }
     }
 }
@@ -86,14 +91,15 @@ pub struct DnsProviderConfig {
     /// Unique name (a stored secret's shape: lowercase letters, digits, `.`, `_`, `-`; at most 63
     /// characters). Locations and the ACME issuer refer to it.
     pub name: SafeString,
-    /// `azure_dns`, `cloudflare`, `route53` or `rfc2136`.
+    /// `azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated` (no `godaddy` kind exists).
     pub kind: DnsProviderKind,
     /// The zone the provider serves, such as `example.net`: lowercase, no trailing dot. Names
     /// outside it are never written.
     pub zone: SafeString,
     /// The name of the stored secret holding the credential (a client secret, an API token, an
-    /// access key pair as `id:secret`, a TSIG key). Required; the table has no inline credential
-    /// and no credential file.
+    /// access key pair as `id:secret`, a TSIG key). Required for every kind but `delegated`, which
+    /// stores no credential and refuses one; the table has no inline credential and no credential
+    /// file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_ref: Option<SafeString>,
     /// Azure DNS: the subscription ID.
@@ -121,8 +127,10 @@ pub struct DnsProviderConfig {
     /// RFC 2136: the TSIG algorithm; only `hmac-sha256` (the default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub algorithm: Option<SafeString>,
-    /// The challenge name is delegated: the domain whose zone this entry serves, where the
-    /// operator's `_acme-challenge` CNAME points (design 4.4). A domain name, not the zone itself.
+    /// A `delegated` entry only: the name of the other provider entry whose zone takes the
+    /// challenge TXT. The operator's `_acme-challenge.<slug>.<domain>` CNAME at this entry's DNS
+    /// host points to `<slug>.<that entry's zone>` (design 4.4, ADR-1115). Refused on every other
+    /// kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_to: Option<SafeString>,
     /// Compute every change and record it without calling the provider's write endpoint. New
@@ -142,6 +150,33 @@ impl DnsProviderConfig {
     pub fn name(&self) -> &str {
         self.name.as_str()
     }
+
+    /// Whether this is a `delegated` entry (no account; a hand-made CNAME).
+    pub fn is_delegated(&self) -> bool {
+        self.kind == DnsProviderKind::Delegated
+    }
+
+    /// For a `delegated` entry, the provider entry in `all` that holds the validation zone (the
+    /// one `delegated_to` names), when there is one and it is not itself delegated.
+    pub fn validation_provider<'a>(&self, all: &'a [Self]) -> Option<&'a Self> {
+        let to = self.delegated_to.as_ref()?.trim();
+        all.iter()
+            .find(|p| p.name.as_str() == to && !p.is_delegated() && p.name != self.name)
+    }
+}
+
+/// The name the operator creates the CNAME at, at their DNS host: `_acme-challenge.<slug>.<domain>`
+/// (lowercase, no trailing dot). T36.10b step b5, ADR-1115.
+#[must_use]
+pub fn challenge_name(slug: &str, domain: &str) -> String {
+    format!("_acme-challenge.{slug}.{domain}").to_ascii_lowercase()
+}
+
+/// What that CNAME points at: `<slug>.<validation zone>` (lowercase, no trailing dot), where the
+/// validation provider's credential writes the challenge TXT.
+#[must_use]
+pub fn challenge_target(slug: &str, validation_zone: &str) -> String {
+    format!("{slug}.{validation_zone}").to_ascii_lowercase()
 }
 
 fn domain_ok(d: &str) -> bool {
@@ -215,7 +250,7 @@ fn belongs(kind: DnsProviderKind, field: &str) -> bool {
         }
         DnsProviderKind::Route53 => field == "hosted_zone_id",
         DnsProviderKind::Rfc2136 => matches!(field, "server" | "key_name"),
-        DnsProviderKind::Cloudflare => false,
+        DnsProviderKind::Cloudflare | DnsProviderKind::Delegated => false,
     }
 }
 
@@ -252,16 +287,25 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
                 "a zone such as example.net: lowercase letters, digits and hyphens in at least two labels, no trailing dot".into(),
             );
         }
-        match p.credential_ref.as_ref().map(|c| c.trim()) {
-            None | Some("") => err(
-                format!("{at}.credential_ref"),
-                "required: the name of the stored secret that holds the credential (Settings, Integrations and secrets)".into(),
-            ),
-            Some(n) if !crate::secret_refs::valid_name(n) => err(
-                format!("{at}.credential_ref"),
-                "a stored secret's name: lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most 63".into(),
-            ),
-            Some(_) => {}
+        if p.kind == DnsProviderKind::Delegated {
+            if set(p.credential_ref.as_ref()) {
+                err(
+                    format!("{at}.credential_ref"),
+                    "a `delegated` entry stores no credential: the challenge is written by the provider it delegates to".into(),
+                );
+            }
+        } else {
+            match p.credential_ref.as_ref().map(|c| c.trim()) {
+                None | Some("") => err(
+                    format!("{at}.credential_ref"),
+                    "required: the name of the stored secret that holds the credential (Settings, Integrations and secrets)".into(),
+                ),
+                Some(n) if !crate::secret_refs::valid_name(n) => err(
+                    format!("{at}.credential_ref"),
+                    "a stored secret's name: lowercase letters, digits, `.`, `_` or `-`, starting with a letter or digit, at most 63".into(),
+                ),
+                Some(_) => {}
+            }
         }
         // Each kind's own fields: required ones are named when missing, and a field that belongs
         // to another kind is refused rather than ignored.
@@ -288,7 +332,9 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
         let required: &[&str] = match p.kind {
             DnsProviderKind::AzureDns => &["subscription", "resource_group", "tenant", "client_id"],
             DnsProviderKind::Rfc2136 => &["server", "key_name"],
-            DnsProviderKind::Cloudflare | DnsProviderKind::Route53 => &[],
+            DnsProviderKind::Cloudflare | DnsProviderKind::Route53 | DnsProviderKind::Delegated => {
+                &[]
+            }
         };
         for f in required {
             if !set(value(f)) {
@@ -350,19 +396,45 @@ pub fn problems(cfg: &Config) -> Vec<(String, String)> {
                 );
             }
         }
-        if let Some(d) = p.delegated_to.as_ref().filter(|d| set(Some(d))) {
-            let d = d.trim().trim_end_matches('.');
-            if !domain_ok(d) || !d.contains('.') {
-                err(
+        let delegate = p.delegated_to.as_ref().filter(|d| set(Some(d)));
+        if p.kind == DnsProviderKind::Delegated {
+            match delegate.map(|d| d.trim()) {
+                None => err(
                     format!("{at}.delegated_to"),
-                    "a domain name such as home.acme-validation.example.org (lowercase, no trailing dot)".into(),
-                );
-            } else if d == zone {
-                err(
-                    format!("{at}.delegated_to"),
-                    "the challenge is delegated to another name than the zone itself".into(),
-                );
+                    "required for a `delegated` provider: the name of the provider entry whose zone takes the challenge".into(),
+                ),
+                Some(to) => match cfg.dns_provider.iter().find(|o| o.name.as_str() == to) {
+                    None => err(
+                        format!("{at}.delegated_to"),
+                        format!("`{to}` is not a DNS provider in this configuration"),
+                    ),
+                    Some(o) if o.name == p.name => err(
+                        format!("{at}.delegated_to"),
+                        "a delegated provider cannot delegate to itself".into(),
+                    ),
+                    Some(o) if o.kind == DnsProviderKind::Delegated => err(
+                        format!("{at}.delegated_to"),
+                        format!(
+                            "`{to}` is itself delegated: name a provider that holds a zone and a credential"
+                        ),
+                    ),
+                    Some(o) if o.zone == p.zone => err(
+                        format!("{at}.delegated_to"),
+                        format!(
+                            "`{to}` serves the same zone: delegate to a provider that holds another zone (a small validation zone)"
+                        ),
+                    ),
+                    Some(_) => {}
+                },
             }
+        } else if delegate.is_some() {
+            err(
+                format!("{at}.delegated_to"),
+                format!(
+                    "not a field of a `{}` provider: only a `delegated` entry names another provider",
+                    p.kind.as_str()
+                ),
+            );
         }
         if !(1..=1000).contains(&p.max_writes_per_hour) {
             err(
@@ -438,6 +510,90 @@ client_id = "99999999-8888-7777-6666-555555555555"
             let e = toml::from_str::<Config>(&bad).unwrap_err().to_string();
             assert!(e.contains(key), "{key}: {e}");
         }
+    }
+
+    const DELEGATED: &str = r#"
+[[dns_provider]]
+name = "godaddy-home"
+kind = "delegated"
+zone = "example.net"
+delegated_to = "validation"
+
+[[dns_provider]]
+name = "validation"
+kind = "cloudflare"
+zone = "acme-validation.example.org"
+credential_ref = "cf-validation"
+"#;
+
+    // REQ: CLD-904 - there is no GoDaddy kind: the file loader and the API both refuse it.
+    #[test]
+    fn cld_904_there_is_no_godaddy_kind() {
+        let bad = DELEGATED.replace("kind = \"delegated\"", "kind = \"godaddy\"");
+        let e = toml::from_str::<Config>(&bad).unwrap_err().to_string();
+        assert!(e.contains("godaddy") && e.contains("delegated"), "{e}");
+        assert_eq!(DnsProviderKind::Delegated.as_str(), "delegated");
+    }
+
+    // REQ: CLD-904 (T36.10b step b5, ADR-1115) - a delegated entry has no credential and names
+    // another provider that holds the validation zone.
+    #[test]
+    fn cld_904_a_delegated_entry_names_a_provider_and_stores_no_credential() {
+        let c = cfg(DELEGATED);
+        assert!(problems(&c).is_empty(), "{:?}", problems(&c));
+        let d = &c.dns_provider[0];
+        assert!(d.is_delegated());
+        assert_eq!(
+            d.validation_provider(&c.dns_provider)
+                .map(DnsProviderConfig::name),
+            Some("validation")
+        );
+        // A credential is refused.
+        let c = cfg(&DELEGATED.replace(
+            "delegated_to = \"validation\"",
+            "delegated_to = \"validation\"\ncredential_ref = \"x\"",
+        ));
+        assert_eq!(paths(&c), vec!["dns_provider[0].credential_ref"]);
+        // The target is required, must exist, must not be itself, delegated or in the same zone.
+        let c = cfg(&DELEGATED.replace("delegated_to = \"validation\"\n", ""));
+        assert_eq!(paths(&c), vec!["dns_provider[0].delegated_to"]);
+        let c = cfg(&DELEGATED.replace("delegated_to = \"validation\"", "delegated_to = \"nope\""));
+        assert_eq!(paths(&c), vec!["dns_provider[0].delegated_to"]);
+        let c = cfg(&DELEGATED.replace(
+            "delegated_to = \"validation\"",
+            "delegated_to = \"godaddy-home\"",
+        ));
+        assert_eq!(paths(&c), vec!["dns_provider[0].delegated_to"]);
+        let c = cfg(&DELEGATED.replace(
+            "zone = \"acme-validation.example.org\"",
+            "zone = \"example.net\"",
+        ));
+        assert_eq!(paths(&c), vec!["dns_provider[0].delegated_to"]);
+        // No chains: a delegated entry cannot be the validation provider.
+        let chain = format!(
+            "{DELEGATED}\n[[dns_provider]]\nname = \"other\"\nkind = \"delegated\"\nzone = \"example.com\"\ndelegated_to = \"godaddy-home\"\n"
+        );
+        assert_eq!(paths(&cfg(&chain)), vec!["dns_provider[2].delegated_to"]);
+        // Other kinds take no `delegated_to`, and a delegated entry takes no kind field.
+        let c = cfg(&format!("{GOOD}delegated_to = \"validation\"\n"));
+        assert_eq!(paths(&c), vec!["dns_provider[0].delegated_to"]);
+        let c = cfg(&DELEGATED.replace(
+            "delegated_to = \"validation\"",
+            "delegated_to = \"validation\"\nserver = \"ns1.example.net\"",
+        ));
+        assert_eq!(paths(&c), vec!["dns_provider[0].server"]);
+    }
+
+    #[test]
+    fn cld_904_the_challenge_cname_is_spelled_the_one_way() {
+        assert_eq!(
+            challenge_name("home", "example.net"),
+            "_acme-challenge.home.example.net"
+        );
+        assert_eq!(
+            challenge_target("home", "acme-validation.example.org"),
+            "home.acme-validation.example.org"
+        );
     }
 
     #[test]

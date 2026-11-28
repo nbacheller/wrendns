@@ -103,12 +103,27 @@ pub(crate) fn parse(name: &str, body: &serde_json::Value) -> Result<DnsProviderC
 /// providers and a cluster member's build does not know the table (dry runs too).
 fn gate(src: &Sources, after: &Config) -> Result<(), Problem> {
     let before = src.config.load();
-    crate::upgrade_gate::enforce_dns_providers(src.cluster.as_deref(), &before, after).map_err(
-        |why| {
-            Problem::new(Code::UpgradeRequired, why)
-                .hint("Upgrade the member named, then repeat the write. DNS is unaffected.")
-        },
-    )
+    let refuse = |why: String| {
+        Problem::new(Code::UpgradeRequired, why)
+            .hint("Upgrade the member named, then repeat the write. DNS is unaffected.")
+    };
+    crate::upgrade_gate::enforce_dns_providers(src.cluster.as_deref(), &before, after)
+        .map_err(refuse)?;
+    // REQ: CLD-904 (T36.10b step b5, ADR-1115) - a delegated entry also waits for the kind.
+    // While the hold keeps only the delegated entries out of what is served, the served `before`
+    // lacks them though `after` (rebuilt from the stored entries) has them: compare against the
+    // build kept before the strip, so an unchanged held entry is not taken for a new one.
+    let held_before;
+    let delegation_before = if crate::upgrade_gate::HOLD.active()
+        && let Some(c) = src.unheld.load_full()
+    {
+        held_before = c;
+        &held_before
+    } else {
+        &before
+    };
+    crate::upgrade_gate::enforce_dns_delegation(src.cluster.as_deref(), delegation_before, after)
+        .map_err(refuse)
 }
 
 /// REQ: CLD-904 - plans a `PUT` or `DELETE` of a DNS provider (see the module comment).
@@ -216,15 +231,26 @@ fn read_config(src: &Sources, held: bool) -> std::sync::Arc<Config> {
 /// whether this node stores the named secret. While the start-up hold keeps the providers out of
 /// what this node serves, the list is what is configured, marked `held` with the reason.
 pub(crate) fn list(src: &Sources) -> DnsProviderList {
-    let held = crate::upgrade_gate::HOLD
-        .held_features()
-        .contains(&wrendns_cluster::gate::Feature::DnsProviders);
+    let features = crate::upgrade_gate::HOLD.held_features();
+    let all_held = features.contains(&wrendns_cluster::gate::Feature::DnsProviders);
+    // REQ: CLD-904 (T36.10b step b5) - the delegated entries can be held on their own (every member
+    // knows the table but one does not know the kind).
+    let delegated_held = features.contains(&wrendns_cluster::gate::Feature::DnsProviderDelegation);
+    let held = all_held || delegated_held;
     let cfg = read_config(src, held);
     let file = src.file_config.load();
     let items = cfg
         .dns_provider
         .iter()
-        .map(|p| entry(src, p, &file, held))
+        .map(|p| {
+            entry(
+                src,
+                p,
+                &cfg,
+                &file,
+                all_held || (delegated_held && p.is_delegated()),
+            )
+        })
         .collect();
     DnsProviderList {
         items,
@@ -235,7 +261,13 @@ pub(crate) fn list(src: &Sources) -> DnsProviderList {
     }
 }
 
-fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> DnsProviderEntry {
+fn entry(
+    src: &Sources,
+    p: &DnsProviderConfig,
+    cfg: &Config,
+    file: &Config,
+    held: bool,
+) -> DnsProviderEntry {
     let secret = p
         .credential_ref
         .as_ref()
@@ -244,7 +276,12 @@ fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> Dns
     let present = secret.as_deref().is_some_and(|n| src.secrets.exists(n));
     // REQ: CLD-919 - what the entry does now: no provider code (test-only entries), dry run until the first
     // successful test, or sending writes.
-    let (state, detail) = if !crate::dns_provider::registry::has_code(p) {
+    let (state, detail) = if p.is_delegated() {
+        (
+            "delegated",
+            "No account is stored for this DNS host. Create the CNAME shown below at the host once; the challenge is then written in the validation zone by the provider named under Delegated to. A verification failure is a health reason only and changes no DNS answer.",
+        )
+    } else if !crate::dns_provider::registry::has_code(p) {
         (
             "not_used",
             "Stored and validated. This build has no provider code for this entry, so Test says so and nothing is written at the DNS host.",
@@ -277,5 +314,8 @@ fn entry(src: &Sources, p: &DnsProviderConfig, file: &Config, held: bool) -> Dns
         state: state.to_owned(),
         detail: detail.to_owned(),
         held,
+        delegation: p
+            .is_delegated()
+            .then(|| crate::dns_provider::delegation::view(cfg, p)),
     }
 }

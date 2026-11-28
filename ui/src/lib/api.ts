@@ -643,6 +643,9 @@ export const api = {
   // ends dry run), read its record sets with who owns each, and adopt one (admins; never an agent).
   testDnsProvider: (name: string) =>
     call<S['DnsProviderTestResult']>('POST', `/dns-providers/${encodeURIComponent(name)}/test`),
+  // REQ: CLD-904 (T36.10b step b5) — verify a delegated provider's CNAME at the zone's authoritative servers.
+  verifyDnsProvider: (name: string) =>
+    call<S['DnsProviderVerifyResult']>('POST', `/dns-providers/${encodeURIComponent(name)}/verify`),
   dnsProviderRecords: (name: string) =>
     get<S['DnsProviderRecords']>(`/dns-providers/${encodeURIComponent(name)}/records`),
   adoptDnsRecord: (name: string, record: { name: string; recordType: string }) =>

@@ -42,7 +42,7 @@ pub use discovery::{
     CredentialRole, DiscoveryConfig, DiscoverySubnet, SnmpAgent, SnmpCredential, SnmpTable,
     SnmpVersion, UnifiReads,
 };
-pub use dns_provider::{DnsProviderConfig, DnsProviderKind};
+pub use dns_provider::{DnsProviderConfig, DnsProviderKind, challenge_name, challenge_target};
 pub use env::{ENV_PREFIX, NEVER_INHERITED};
 pub use gate::{DefaultGate, HostFacts, default_gate, gate_warnings, is_wildcard};
 pub use location::{LocationConfig, LocationNet, LocationVisibility, device_label};

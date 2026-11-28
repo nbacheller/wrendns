@@ -172,9 +172,9 @@ subscription = "<subscription id>"
 resource_group = "<group>"
 tenant = "<tenant id>"
 client_id = "<application id>"
-# optional: the challenge is delegated (section 4.4)
-delegated_to = "home.acme-validation.example.org"
 dry_run = false
+# a `delegated` entry (section 4.4) has kind = "delegated", no credential_ref, and
+#   delegated_to = "<the name of another [[dns_provider]] entry that holds the validation zone>"
 ```
 
 - Shared section (every full member may become the issuer), admin-only, edited as a managed kind, refused by the gate in §2.6 until every member knows it.
@@ -223,7 +223,7 @@ The helper for every kind shows, before any secret is entered, exactly which per
 For a provider that cannot scope a token, or has no API:
 1. The operator picks a validation zone they control at a provider that can scope narrowly (or a separate zone used for nothing else), and adds a `[[dns_provider]]` for it.
 2. The helper shows the exact record to create at the main provider: `_acme-challenge.<slug>.<domain>. CNAME <slug>.<validation zone>.`
-3. The node verifies the CNAME through the public authoritative servers (§3.3 step 3) and shows it as verified before it uses it.
+3. The node verifies the CNAME at the zone's authoritative servers (§3.3 step 3), found through the configured upstreams and never its own local data or cache, and shows it as verified (every name server answers with authority and the target) or not verified with the reason, before it uses it. The entry for the host with no API is `kind = "delegated"` with `delegated_to` naming the validation provider's entry (ADR-1115).
 4. The CA follows the CNAME; the node writes the TXT only in the validation zone. A leaked credential can then change only that zone.
 
 ### 4.5 Audit, rate limits and dry run

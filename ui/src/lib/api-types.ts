@@ -2387,6 +2387,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dns-providers/{name}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify the delegation CNAME of a `delegated` provider.
+         * @description CLD-904 (T36.10b step b5, ADR-1115). For each location whose domain is in the provider's zone the
+         *     node asks the zone's own authoritative name servers (found through the configured upstreams, never
+         *     its own local data or cache) whether `_acme-challenge.<slug>.<domain>` is a CNAME to
+         *     `<slug>.<validation zone>`. Every name server must answer with authority and with exactly that
+         *     target. The answer lists each record with the verdict and the reason; a failure is a health
+         *     reason only and changes no DNS answer. Nothing is written anywhere. It runs on the node asked.
+         *     Admin only, never for agents.
+         */
+        post: operations["verify_dns_provider"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dnssec-settings/default": {
         parameters: {
             query?: never;
@@ -7912,6 +7938,43 @@ export interface components {
             recordType: string;
         };
         /**
+         * @description REQ: CLD-904 (T36.10b step b5, ADR-1115) - the delegation of a `delegated` provider: the
+         *     provider that holds the validation zone and the CNAME records the operator creates by hand at
+         *     the DNS host, each with this node's latest check.
+         */
+        DnsProviderDelegation: {
+            /**
+             * @description The CNAME records to create, one per location in the zone; one template with `<slug>` when
+             *     no location is in the zone yet.
+             */
+            records: components["schemas"]["DnsProviderDelegationRecord"][];
+            /** @description The provider entry that takes the challenge TXT (`delegated_to`). */
+            validationProvider: string;
+            /** @description That provider's zone (absent when the entry it names is missing). */
+            validationZone?: string | null;
+        };
+        /**
+         * @description REQ: CLD-904 (T36.10b step b5) - one `_acme-challenge` CNAME to create at the DNS host, and
+         *     whether this node has verified it at the zone's authoritative servers.
+         */
+        DnsProviderDelegationRecord: {
+            /**
+             * Format: int64
+             * @description When that check ran, Unix seconds.
+             */
+            checkedAt?: number | null;
+            /** @description The location it is for; absent for the template shown before any location uses the zone. */
+            location?: string | null;
+            /** @description The name to create the CNAME at: `_acme-challenge.<slug>.<domain>` (no trailing dot). */
+            name: string;
+            /** @description Why, from the latest check on this node. */
+            reason?: string | null;
+            /** @description What it points to: `<slug>.<validation zone>` (no trailing dot). */
+            target: string;
+            /** @description `true` verified, `false` not verified; absent when this node has not checked it yet. */
+            verified?: boolean | null;
+        };
+        /**
          * @description REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) - one DNS provider as the API shows it: its settings
          *     (the credential as a stored secret's name, never a value), where it comes from, and its state.
          */
@@ -7925,6 +7988,7 @@ export interface components {
              *     name of a stored secret.
              */
             definition: unknown;
+            delegation?: components["schemas"]["DnsProviderDelegation"] | null;
             /** @description The sentence that goes with `state`. */
             detail: string;
             /** @description Whether it only computes changes and records them (`dry_run`). */
@@ -7934,7 +7998,7 @@ export interface components {
              *     cluster member's build does not know DNS providers yet).
              */
             held?: boolean;
-            /** @description `azure_dns`, `cloudflare`, `route53` or `rfc2136`. */
+            /** @description `azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated`. */
             kind: string;
             name: string;
             /** @description `file` (the configuration files define it; read-only here) or `api`. */
@@ -8023,6 +8087,18 @@ export interface components {
             scope?: components["schemas"]["DnsProviderScope"] | null;
             /** @description False when this build has no provider code for the entry (`error` says so; every real kind has code). */
             supported: boolean;
+        };
+        /** @description REQ: CLD-904 (T36.10b step b5) - the answer of `POST /api/v1/dns-providers/{name}/verify`. */
+        DnsProviderVerifyResult: {
+            /**
+             * @description A sentence for the card (for example, that no location uses the zone yet so nothing was
+             *     checked).
+             */
+            note?: string | null;
+            /** @description Every record is verified. */
+            ok: boolean;
+            /** @description Each record with its verdict and reason. */
+            records: components["schemas"]["DnsProviderDelegationRecord"][];
         };
         /**
          * @description REQ: CLU-014 — `"all"`: every device (the node's infrastructure, cluster nodes, and
@@ -18909,6 +18985,65 @@ export interface operations {
             };
             /** @description `upgrade_required`: a cluster member's build does not know the test yet. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    verify_dns_provider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The provider's name. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each record with its verdict. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DnsProviderVerifyResult"];
+                };
+            };
+            /** @description Only an admin can verify a DNS provider (agents never). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No DNS provider by that name. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The entry is not a `delegated` provider, or it is held back. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description This node has no upstream to find the name servers through. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

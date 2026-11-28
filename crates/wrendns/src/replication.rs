@@ -94,7 +94,20 @@ pub(crate) fn published_features(cfg: &Config) -> Vec<Feature> {
     if shared_uses_dns_providers(&v) {
         out.push(Feature::DnsProviders);
     }
+    if shared_uses_dns_delegation(&v) {
+        out.push(Feature::DnsProviderDelegation);
+    }
     out
+}
+
+/// Whether a shared configuration (as JSON) has a `delegated` `[[dns_provider]]` entry.
+pub(crate) fn shared_uses_dns_delegation(v: &serde_json::Value) -> bool {
+    v.get("dns_provider")
+        .and_then(|a| a.as_array())
+        .is_some_and(|a| {
+            a.iter()
+                .any(|p| p.get("kind").and_then(|k| k.as_str()) == Some("delegated"))
+        })
 }
 
 /// Whether a shared configuration (as JSON) has a `[[dns_provider]]` entry.
