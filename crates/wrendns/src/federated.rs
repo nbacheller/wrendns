@@ -3737,6 +3737,13 @@ impl Backend for Federated {
     ) -> BoxFuture<Result<wrendns_api::guarded::GuardedPreview, Problem>> {
         self.local.guarded_preview(caller, id, req)
     }
+    fn guarded_node_api(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        node: String,
+    ) -> BoxFuture<Result<wrendns_api::guarded::GuardedNodeApi, Problem>> {
+        self.local.guarded_node_api(caller, node)
+    }
     fn guarded_apply(
         &self,
         caller: wrendns_api::guarded::GuardedCaller,

@@ -4,20 +4,32 @@
   // node's DNS listeners as a table with the probe status, and a draft the admin edits (add, edit, remove)
   // that goes to the review step (`GuardedChange`, id `listen`) as the whole list. Nothing reaches the server
   // before Review. A change that adds and removes offers "Add only" first. Operators and viewers read the
-  // table. A file that sets `[[listen]]` locks the card. Certificate and key paths, limits and options are an admin's: the others see the address, the protocol, the certificate's name and its expiry. The device key (gate) and PROXY are read-only here.
+  // table. With another node picked (T27.14g0) the card shows that node's listeners, read through the primary, and
+  // stages the change for it; the confirm is done on that node itself. A file that sets `[[listen]]` locks the card. Certificate and key paths, limits and options are an admin's: the others see the address, the protocol, the certificate's name and its expiry. The device key (gate) and PROXY are read-only here.
   import { onMount } from 'svelte';
   import type { S } from '../api';
-  import { guarded, refreshGuarded } from '../guarded.svelte';
+  import { guarded, loadNodeApi, nodeApi, refreshGuarded, targetNode } from '../guarded.svelte';
   import AllowedNetworks from './AllowedNetworks.svelte';
   import GuardedChange from './GuardedChange.svelte';
   import HelpButton from './HelpButton.svelte';
+  import NodePick from './NodePick.svelte';
 
   let {
-    rows,
-    probes = [],
+    rows: ownRows,
+    probes: ownProbes = [],
     editable = false,
     onChanged = undefined,
   }: { rows: S['ListenerAccess'][]; probes?: S['ProbeResult'][]; editable?: boolean; onChanged?: () => void } = $props();
+
+  // The picked node: this node's own rows and probes, or another's, read through the primary (its probes are its own).
+  const target = $derived(targetNode());
+  const nodeUnread = $derived(!!target && !nodeApi.data);
+  const rows = $derived(target ? (nodeApi.data?.listeners ?? []) : ownRows);
+  const probes = $derived(target ? [] : ownProbes);
+  const changed = () => {
+    if (target) void loadNodeApi(target, true);
+    onChanged?.();
+  };
 
   type D = { id: number; proto: string; addr: string; cert: string; tkey: string; path: string; max: string; per: string; gone: boolean; fresh: boolean; edit: boolean; from?: S['ListenerAccess'] };
   let seq = 0;
@@ -39,7 +51,7 @@
   });
   onMount(() => void refreshGuarded());
 
-  const setByFile = $derived(!!(guarded.nodes[0] ?? guarded.node)?.settings.find((s) => s.id === 'listen')?.setByFile);
+  const setByFile = $derived(!!guarded.node?.settings.find((s) => s.id === 'listen')?.setByFile);
   const num = (s: string) => (s.trim() ? Number(s) : null);
   const entry = (d: D) => ({
     proto: d.proto,
@@ -92,6 +104,7 @@
       <strong>Set by file.</strong> A configuration file sets <code>[[listen]]</code> and wins. Edit the file and reload to change the listeners.
     </div>
   {/if}
+  <NodePick testid="listeners-node" />
   <div class="table-wrap">
     <table class="compact">
       <thead><tr><th>Protocol</th><th>Address</th><th>Certificate</th><th>Device key</th><th>PROXY</th><th>Status</th>{#if editable && !setByFile}<th></th>{/if}</tr></thead>
@@ -137,7 +150,7 @@
       </tbody>
     </table>
   </div>
-  {#if editable && !setByFile}
+  {#if editable && !setByFile && !nodeUnread}
     <button data-testid="listeners-add" onclick={add}>Add listener</button>
     {#if addsAndRemoves}
       <label class="small"><input type="checkbox" bind:checked={keepOld} data-testid="listeners-keep-old" /> Add only, keep the old listeners (recommended): remove them in a later change, once your clients use the new address.</label>
@@ -145,7 +158,7 @@
     {#if dirty}
       <p class="small muted">Review sends the whole list. The node asks each new listener a test question itself before you can confirm.</p>
     {/if}
-    <GuardedChange id="listen" label="Listeners" {value} disabled={!dirty} onDone={() => onChanged?.()} />
+    <GuardedChange id="listen" label="Listeners" {value} node={target} disabled={!dirty} onDone={changed} />
   {/if}
   <p class="small muted">PROXY protocol stays in the configuration file: a PROXY listener trusts the address in each connection's header, so turning it on here would let any client choose its own address.</p>
   <AllowedNetworks summary />

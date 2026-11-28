@@ -18,6 +18,7 @@ use super::store::Stored;
 
 /// A node of the cluster, as the primary sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent facts about one member
 pub(crate) struct Member {
     /// The node's ID.
     pub(crate) id: String,
@@ -29,6 +30,12 @@ pub(crate) struct Member {
     pub(crate) site: String,
     /// A witness only votes: it serves no DNS.
     pub(crate) witness: bool,
+    /// REQ: API-902 (T27.14g0) - the URL its web UI and API answer on, as it announced it (empty:
+    /// none, an older build).
+    pub(crate) api_url: String,
+    /// REQ: API-902 (T27.14g0) - its build announces the per-node read of its web UI and API settings
+    /// (the `MemberApiAddress` gate feature); an older member does not know it.
+    pub(crate) node_api: bool,
 }
 
 /// A socket kept open for the confirmation window's proof. Dropping it closes it.
@@ -102,6 +109,10 @@ pub(crate) trait Host: Send + Sync + 'static {
     fn clustered(&self) -> bool;
     /// The cluster's members (empty when standalone).
     fn members(&self) -> Vec<Member>;
+    /// REQ: API-902 (T27.14g0) - the URL this node's web UI and API answer on, when it can name one.
+    fn own_api_url(&self) -> Option<String> {
+        None
+    }
     /// This node's own site label (empty when it has none or isn't clustered).
     fn site(&self) -> String {
         String::new()

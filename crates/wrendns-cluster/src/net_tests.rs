@@ -961,6 +961,7 @@ fn clu_009_a_bootstrap_join_or_a_hello_cannot_claim_eligibility() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1056,6 +1057,7 @@ fn clu_005_only_voters_can_fence_the_primary() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1265,6 +1267,7 @@ fn clu_005_an_unknown_member_is_trusted_with_nothing() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1645,6 +1648,7 @@ fn clu_001_primary_urls_leave_out_nodes_known_not_to_be_primary() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1817,6 +1821,7 @@ fn clu_005_a_node_defers_to_an_eligible_git_managed_voter_that_is_up() {
             config_source: source.into(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -1900,6 +1905,7 @@ fn clu_005_deference_follows_the_lease_not_a_members_hello_flag() {
                 config_source: "gitops".into(),
                 instance: String::new(),
                 features: Vec::new(),
+                api_url: String::new(),
                 source_commit: String::new(),
             })),
         },
@@ -2021,6 +2027,7 @@ fn clu_001_removing_a_node_drops_it_and_refuses_it() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2294,6 +2301,7 @@ fn clu_005_a_promotion_reaches_a_replica_in_the_heartbeats() {
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };
@@ -2410,6 +2418,7 @@ fn clu_001_a_replica_learns_that_another_replica_is_up_from_the_primarys_heartbe
             config_source: String::new(),
             instance: String::new(),
             features: Vec::new(),
+            api_url: String::new(),
             source_commit: String::new(),
         })),
     };

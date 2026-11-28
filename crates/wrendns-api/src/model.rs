@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 /// REQ: DNS-901 (T36.2) — one DNS listener's known-ID gate.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::struct_excessive_bools)] // one flag per fact the UI shows
 pub struct ListenerAccess {
@@ -80,7 +80,7 @@ impl ListenerAccess {
 /// REQ: API-902, API-901 (T27.14f; owner decision, 2026-11-27) - how this node serves its web UI and
 /// API, for the Settings "Web UI and API" card. Admin only: absent from every other caller's answer,
 /// as the listener paths are, and absent from an older node's.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiInfo {
     /// The address the API listens on (`[api] listen`).
@@ -4294,6 +4294,11 @@ pub struct ClusterNode {
     pub config_source: Option<String>,
     /// The machine it runs on (T6.11); absent from older nodes and before the first sample.
     pub host: Option<HostReport>,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on (`https://host:port`),
+    /// as the node announces it; absent from an older node, from a node that cannot name one and from
+    /// one not heard from. A card links to the node's own address from it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_url: Option<String>,
     /// REQ: CLU-015 (ADR-903 §6) — its stored secrets: stamps and counts, never a value. Absent
     /// from older nodes and from nodes not heard from.
     pub secrets: Option<ClusterSecrets>,

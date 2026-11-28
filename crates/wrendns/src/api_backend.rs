@@ -839,8 +839,53 @@ impl ApiBackend {
     }
 }
 
+/// REQ: DNS-901 (T36.2) - each listener's known-ID gate and the facts it was bound with (admin fields
+/// included: the caller strips them for anyone else). Also what a member answers to the per-node read
+/// of T27.14g0.
+pub(crate) fn listener_access(
+    cfg: &wrendns_config::Config,
+) -> Vec<wrendns_api::model::ListenerAccess> {
+    cfg.listen
+        .iter()
+        .map(|l| {
+            // REQ: DNS-901 — what the socket does, and the facts it was bound with.
+            let host = crate::gate_host::facts_for(l);
+            wrendns_api::model::ListenerAccess {
+                listener: format!("{}://{}", label(&l.proto), l.addr),
+                require_client_id: crate::gate_host::effective_gate(l),
+                setting: match l.require_client_id {
+                    None => "unset",
+                    Some(true) => "true",
+                    Some(false) => "false",
+                }
+                .to_owned(),
+                gated_by_default: l.gated_by_default(host),
+                public_address: wrendns_config::is_public_address(l.addr.ip()),
+                wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
+                default_on: l.default_gate(host).on(),
+                default_reason: l.default_gate(host).describe().to_owned(),
+                public_exposure: l.default_gate(host).public_exposure(),
+                can_carry_key: l.proto.needs_tls(),
+                tls_cert: l.tls.as_ref().map(|t| t.cert.as_str().to_owned()),
+                tls_key: l.tls.as_ref().map(|t| t.key.as_str().to_owned()),
+                path: l.path.as_ref().map(|p| p.as_str().to_owned()),
+                max_connections: l.max_connections,
+                max_connections_per_address: l.max_connections_per_address,
+                proxy_protocol: Some(l.proxy_protocol),
+                tls_cert_name: l.tls.as_ref().and_then(|t| {
+                    t.cert
+                        .as_str()
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .map(str::to_owned)
+                }),
+            }
+        })
+        .collect()
+}
+
 /// REQ: API-902 (T27.14f) - how the web UI and API are served, as `system/info` reports it to admins.
-fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
+pub(crate) fn api_info(cfg: &wrendns_config::Config) -> wrendns_api::model::ApiInfo {
     wrendns_api::model::ApiInfo {
         listen: cfg.api.listen.to_string(),
         scheme: if cfg.api.tls.is_some() {
@@ -903,44 +948,7 @@ impl Backend for ApiBackend {
                 .map(|l| format!("{}://{}", label(&l.proto), l.addr))
                 .collect(),
             // REQ: DNS-901 (T36.2) — the known-ID gate of each listener.
-            listener_access: cfg
-                .listen
-                .iter()
-                .map(|l| {
-                    // REQ: DNS-901 — what the socket does, and the facts it was bound with.
-                    let host = crate::gate_host::facts_for(l);
-                    wrendns_api::model::ListenerAccess {
-                        listener: format!("{}://{}", label(&l.proto), l.addr),
-                        require_client_id: crate::gate_host::effective_gate(l),
-                        setting: match l.require_client_id {
-                            None => "unset",
-                            Some(true) => "true",
-                            Some(false) => "false",
-                        }
-                        .to_owned(),
-                        gated_by_default: l.gated_by_default(host),
-                        public_address: wrendns_config::is_public_address(l.addr.ip()),
-                        wildcard_bind: wrendns_config::is_wildcard(l.addr.ip()),
-                        default_on: l.default_gate(host).on(),
-                        default_reason: l.default_gate(host).describe().to_owned(),
-                        public_exposure: l.default_gate(host).public_exposure(),
-                        can_carry_key: l.proto.needs_tls(),
-                        tls_cert: l.tls.as_ref().map(|t| t.cert.as_str().to_owned()),
-                        tls_key: l.tls.as_ref().map(|t| t.key.as_str().to_owned()),
-                        path: l.path.as_ref().map(|p| p.as_str().to_owned()),
-                        max_connections: l.max_connections,
-                        max_connections_per_address: l.max_connections_per_address,
-                        proxy_protocol: Some(l.proxy_protocol),
-                        tls_cert_name: l.tls.as_ref().and_then(|t| {
-                            t.cert
-                                .as_str()
-                                .rsplit(['/', '\\'])
-                                .next()
-                                .map(str::to_owned)
-                        }),
-                    }
-                })
-                .collect(),
+            listener_access: listener_access(&cfg),
             query_log: self.src.qlog.is_some(),
             filter_snapshot: snap.as_ref().map(|s| s.manifest.version),
             filter_names: snap.as_ref().map_or(0, |s| {
@@ -4522,6 +4530,20 @@ impl Backend for ApiBackend {
         Box::pin(async move {
             match src.guarded.get() {
                 Some(e) => e.preview(&caller, &id, req).await,
+                None => Err(guarded_unavailable()),
+            }
+        })
+    }
+
+    fn guarded_node_api(
+        &self,
+        caller: wrendns_api::guarded::GuardedCaller,
+        node: String,
+    ) -> wrendns_api::BoxFuture<Result<wrendns_api::guarded::GuardedNodeApi, Problem>> {
+        let src = Arc::clone(&self.src);
+        Box::pin(async move {
+            match src.guarded.get() {
+                Some(e) => e.node_api(&caller, &node).await,
                 None => Err(guarded_unavailable()),
             }
         })

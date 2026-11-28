@@ -427,6 +427,9 @@ pub fn never_for_agents(method: &Method, path: &str) -> bool {
         || (guarded && *method != Method::GET && *method != Method::HEAD)
         // The read of one pending change (T27.14b) names the staged addresses and probe errors.
         || p.starts_with("/api/v1/guarded/pending/")
+        // REQ: API-902 (T27.14g0) - another node's own settings (trusted proxies, listener paths):
+        // an admin's, as the `api` block of the system info is.
+        || p.starts_with("/api/v1/guarded/nodes/")
         || (prune && write)
         || (sources && write)
         || (*method == Method::POST

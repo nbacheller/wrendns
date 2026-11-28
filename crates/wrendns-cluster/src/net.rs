@@ -421,6 +421,10 @@ pub struct Member {
     pub version: String,
     /// REQ: DSC-908 - the gated features its build announced (empty from an older build).
     pub features: Vec<String>,
+    /// REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on, as it announced it in
+    /// its Hello and keeps current in its heartbeats; empty from an older build or a node that cannot
+    /// name one.
+    pub api_url: String,
     pub advertise: Vec<String>,
     pub eligible: bool,
     pub primary: bool,
@@ -784,6 +788,9 @@ pub struct Cluster {
     pub version: String,
     /// REQ: DSC-908 - the gated features this build announces in its Hello.
     features: Mutex<Vec<String>>,
+    /// REQ: API-902 (T27.14g0) - the URL this node's web UI and API answer on, announced in the Hello
+    /// and in each heartbeat (empty: none).
+    api_url: Mutex<String>,
     members: Mutex<BTreeMap<String, Member>>,
     local: Mutex<LocalState>,
     /// The manifest this node publishes (primary), sent on every stream: the stable head.
@@ -1043,6 +1050,7 @@ impl Cluster {
             identity,
             version: version.to_owned(),
             features: Mutex::new(crate::gate::own_features()),
+            api_url: Mutex::new(String::new()),
             members: Mutex::new(BTreeMap::new()),
             published: watch::Sender::new(None),
             canary: watch::Sender::new(None),
@@ -2364,6 +2372,23 @@ impl Cluster {
             .any(|n| n.witness && n.node_id == node)
     }
 
+    /// REQ: API-902 (T27.14g0, ADR-1113) - sets the URL this node announces for its web UI and API
+    /// (empty: none). The next heartbeat carries it to every peer, so a confirmed move of the API
+    /// address is seen within seconds; a change is logged nowhere because nothing depends on it.
+    pub fn set_api_url(&self, url: &str) {
+        let mut held = self.api_url.lock().unwrap_or_else(PoisonError::into_inner);
+        held.clear();
+        held.push_str(url);
+    }
+
+    /// The URL this node announces for its web UI and API (empty: none).
+    pub fn api_url(&self) -> String {
+        self.api_url
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// REQ: DSC-908 - replaces the gated features this node announces (a test stands in a build
     /// that predates a feature; the default is every feature this build knows).
     pub fn set_features(&self, features: Vec<String>) {
@@ -2498,6 +2523,7 @@ impl Cluster {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone(),
+                api_url: self.api_url(),
             })),
         }
     }
@@ -2584,6 +2610,7 @@ impl Cluster {
                 secrets_held: l.secrets.held,
                 credential_issues: l.secrets.credential_issues.clone(),
                 secret_refs: l.secrets.secret_refs.clone(),
+                api_url: Some(self.api_url()),
             })),
         }
     }
@@ -2633,6 +2660,7 @@ impl Cluster {
                         site: h.site,
                         version: h.version,
                         features: h.features,
+                        api_url: h.api_url,
                         advertise: h.advertise,
                         eligible: h.eligible,
                         primary: h.primary,
@@ -2767,6 +2795,10 @@ impl Cluster {
                     m.canary_of = hb.canary_of;
                     // REQ: OBS-010 (T24.5) — the peer's own view of its primary (absent: it reaches it).
                     m.primary_silent_s = hb.primary_silent_s;
+                    // REQ: API-902 (T27.14g0) - its API URL as it is now (absent from an older node).
+                    if let Some(url) = hb.api_url.take() {
+                        m.api_url = url;
+                    }
                     m.last_seen_ms = now;
                     if !hb.trust_fp.is_empty() {
                         m.trust_fp.clone_from(&hb.trust_fp);

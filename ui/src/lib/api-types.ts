@@ -2742,6 +2742,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/guarded/nodes/{node}/api": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Another node's own web UI and API settings and DNS listeners (admin sessions only).
+         * @description The address, scheme, certificate name, trusted proxies and redirect of the node's API, its DNS
+         *     listeners with the paths, limits and options only an admin sees, and the URL it announces for its
+         *     web UI. The cards for the Web UI and API and for the Listeners show and stage the picked node's
+         *     values from it. `node` is a node's name or ID (this node answers from its own configuration);
+         *     another node is asked through the cluster by the primary. Admin session only: 403
+         *     `agent_not_allowed` for agent tokens and 403 `reauth_required` for other tokens, which also covers
+         *     a wall display. A member whose build does not announce the read is 409 `upgrade_required` naming
+         *     it; a replica answers 421 `not_primary`. No MCP tool.
+         */
+        get: operations["guarded_node_api"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/guarded/pending/{id}": {
         parameters: {
             query?: never;
@@ -6617,6 +6644,12 @@ export interface components {
         /** @description One node in [`ClusterView`]. */
         ClusterNode: {
             /**
+             * @description REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on (`https://host:port`),
+             *     as the node announces it; absent from an older node, from a node that cannot name one and from
+             *     one not heard from. A card links to the node's own address from it.
+             */
+            apiUrl?: string | null;
+            /**
              * Format: int64
              * @description How long it has been behind (absent when in sync).
              */
@@ -8567,10 +8600,34 @@ export interface components {
             proofPort?: number | null;
         };
         /**
+         * @description REQ: API-902, API-901 (T27.14g0, ADR-1113; owner decision, 2026-11-27) - what `GET
+         *     /api/v1/guarded/nodes/{node}/api` answers: another node's own web UI and API settings and its DNS
+         *     listeners, as that node reports them to an admin. The cards for the Web UI and API and for the
+         *     Listeners show and stage these values when another node is picked. Admin only, like the `api`
+         *     block of `GET /api/v1/system/info`; a member that does not announce the read is refused with
+         *     `409 upgrade_required` naming it, and the card says so.
+         */
+        GuardedNodeApi: {
+            /** @description The address, scheme, certificate name, trusted proxies and redirect it runs now. */
+            api: components["schemas"]["ApiInfo"];
+            /** @description The URL its web UI and API answer on, as it announced it; absent when it announces none. */
+            apiUrl?: string | null;
+            /** @description Its DNS listeners as it runs them, with the paths, limits and options only an admin sees. */
+            listeners: components["schemas"]["ListenerAccess"][];
+            /** @description The node (the name it is listed under). */
+            node: string;
+        };
+        /**
          * @description `GET /api/v1/guarded`: what is guarded on a node and what is pending. No value, preview ID or
          *     confirmation token is ever in it.
          */
         GuardedNodeStatus: {
+            /**
+             * @description REQ: API-902 (T27.14g0, ADR-1113) - the URL its web UI and API answer on, as the node announces
+             *     it; absent from an older node and from one that cannot name an address. A card links to the
+             *     node's own address from it (a guarded change is confirmed on the node itself).
+             */
+            apiUrl?: string | null;
             /**
              * Format: int32
              * @description The seconds a window change waits (`[api] confirm_window_secs`).
@@ -19726,6 +19783,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GuardedStatus"];
+                };
+            };
+        };
+    };
+    guarded_node_api: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The node's name or ID. */
+                node: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The node's settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardedNodeApi"];
+                };
+            };
+            /** @description Not an admin session, an agent token, or another token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such cluster node (`node_unknown`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The member's build does not know the read (`upgrade_required`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Ask the primary: only it forwards a request for another node. */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The node did not answer. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
                 };
             };
         };

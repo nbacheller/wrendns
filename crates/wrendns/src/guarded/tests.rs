@@ -2601,6 +2601,8 @@ fn cluster() -> (Node, Node, Node) {
             up: true,
             site: String::new(),
             witness: false,
+            api_url: format!("https://{n}.example.test:8080"),
+            node_api: true,
         })
         .collect();
     let pstate = Arc::new(State::in_memory().unwrap());
@@ -3679,6 +3681,8 @@ fn api_902_restart_warning_counts_resolvers_of_the_same_site() {
         up: true,
         site: site.to_owned(),
         witness,
+        api_url: String::new(),
+        node_api: true,
     };
     // pi-a (site home) has a witness in its site and a resolver in another site: neither counts.
     *net.members.lock().unwrap() = vec![
@@ -4710,4 +4714,169 @@ async fn obs_007_dnstap_file_value_wins_over_a_confirmed_entry_when_the_file_cha
     super::appliers::overlay_with(&mut cfg, &changed, &held, None, &defs, "pi-a", false);
     assert_eq!(cfg.telemetry.dnstap.socket.as_deref(), Some("/run/g.sock"));
     assert!(!cfg.telemetry.dnstap.forwarder);
+}
+
+// REQ: API-902, API-901 (T27.14g0, ADR-1113) - the primary reads another node's own web UI and API
+// settings and listeners through the forwarding path (a signed assertion, the target answers from its
+// own configuration); this node answers from its own; the announced API URL comes with it, from the
+// member list when the node's answer carries none.
+#[tokio::test(start_paused = true)]
+async fn api_902_node_api_read_for_another_node() {
+    let (a, b, c) = cluster();
+    let alice = admin("alice", 5);
+    let r = a.engine.node_api(&alice, "pi-b").await.unwrap();
+    assert_eq!(r.node, "pi-b");
+    assert_eq!(r.api_url.as_deref(), Some("https://pi-b.example.test:8080"));
+    assert_eq!(r.api.listen, Config::default().api.listen.to_string());
+    assert!(!r.listeners.is_empty(), "the node's DNS listeners");
+    // The id works as well as the name; this node answers locally; a read changes and audits nothing.
+    assert_eq!(
+        a.engine.node_api(&alice, "id-pi-b").await.unwrap().node,
+        "pi-b"
+    );
+    assert_eq!(
+        a.engine.node_api(&alice, "pi-a").await.unwrap().node,
+        "pi-a"
+    );
+    assert!(a.audits("settings.guarded").is_empty());
+    assert!(b.audits("settings.guarded").is_empty() && c.audits("settings.guarded").is_empty());
+    // An unknown node.
+    assert_eq!(
+        code(a.engine.node_api(&alice, "pi-z").await),
+        Code::NodeUnknown
+    );
+    // The listing carries each node's announced URL.
+    let s = a.engine.status().await;
+    let urls: Vec<_> = s.nodes.iter().map(|n| n.api_url.clone()).collect();
+    assert_eq!(urls[0], None, "this node's host names none here");
+    assert!(urls[1..].iter().all(Option::is_some), "{urls:?}");
+}
+
+// REQ: API-902 (T27.14g0) - a replica forwards nothing: the read of another node answers 421 with the
+// primary's address; its own node answers as for a standalone node.
+#[tokio::test(start_paused = true)]
+async fn api_902_node_api_read_on_a_replica_answers_not_primary() {
+    let (_a, b, _c) = cluster();
+    let alice = admin("alice", 5);
+    let e = b.engine.node_api(&alice, "pi-c").await.unwrap_err();
+    assert_eq!(e.code, Code::NotPrimary);
+    assert!(e.detail.contains("pi-a"));
+    assert_eq!(
+        b.engine.node_api(&alice, "pi-b").await.unwrap().node,
+        "pi-b"
+    );
+}
+
+// REQ: API-902, DSC-908 (T27.14g0) - a mixed cluster: a member whose build does not announce the
+// `member_api_address` feature is refused 409 `upgrade_required` naming it, before anything is sent
+// (the target saw no request: no assertion nonce is used), while the members that do know it answer.
+#[tokio::test(start_paused = true)]
+async fn api_902_node_api_read_of_an_older_member_is_upgrade_required() {
+    let (a, b, c) = cluster();
+    for m in a.host.net.members.lock().unwrap().iter_mut() {
+        if m.name == "pi-c" {
+            m.node_api = false;
+            m.api_url = String::new();
+        }
+    }
+    let alice = admin("alice", 5);
+    let e = a.engine.node_api(&alice, "pi-c").await.unwrap_err();
+    assert_eq!(e.code, Code::UpgradeRequired);
+    assert!(e.detail.contains("pi-c"), "{}", e.detail);
+    assert!(e.detail.contains("upgrade it first"), "{}", e.detail);
+    assert!(
+        c.audits("settings.guarded").is_empty() && c.audits("settings.guarded_refused").is_empty()
+    );
+    assert_eq!(
+        a.engine.node_api(&alice, "pi-b").await.unwrap().node,
+        "pi-b"
+    );
+    // A target that was sent the op anyway (a build that knows it) still answers only to the
+    // primary's assertion, as below; an older build that does not know the op cannot decode it, so
+    // the primary never sends it.
+    let _ = b;
+}
+
+// REQ: API-902 (T27.14g0, ADR-956 §5) - the target answers the read only for a primary's signed,
+// unexpired, unused assertion bound to the read: none, a replica's signature, a replay and an
+// assertion for another action are refused.
+#[tokio::test(start_paused = true)]
+async fn api_902_node_api_target_needs_the_primarys_assertion() {
+    let (_a, b, _c) = cluster();
+    let mk = |action: &str, setting: &str, signer: &str, nonce: &str| {
+        let asr = Assertion {
+            admin: "alice".into(),
+            actor: "alice".into(),
+            role: "admin".into(),
+            signed_in_at: Some(now()),
+            remote: None,
+            issuer: "pi-a".into(),
+            node: "pi-b".into(),
+            action: action.into(),
+            setting: setting.into(),
+            preview_id: String::new(),
+            nonce: nonce.into(),
+            expires: now() + 30,
+        };
+        let sig = blake3::keyed_hash(&key_of(signer), &asr.canonical())
+            .as_bytes()
+            .to_vec();
+        Forwarded {
+            op: ForwardedOp::NodeApi,
+            assertion: Some(Signed {
+                assertion: asr,
+                sig,
+            }),
+        }
+    };
+    let refused = |a: ForwardedAnswer| {
+        matches!(
+            a,
+            ForwardedAnswer::Refused {
+                code: Code::Forbidden,
+                ..
+            }
+        )
+    };
+    let none = Forwarded {
+        op: ForwardedOp::NodeApi,
+        assertion: None,
+    };
+    assert!(
+        refused(b.engine.handle_forwarded("pi-a", none).await),
+        "no assertion"
+    );
+    assert!(
+        refused(
+            b.engine
+                .handle_forwarded("pi-a", mk("node_api", "api", "pi-c", "n1"))
+                .await
+        ),
+        "a replica's signature"
+    );
+    assert!(
+        refused(
+            b.engine
+                .handle_forwarded("pi-a", mk("preview", "api", "pi-a", "n2"))
+                .await
+        ),
+        "another action"
+    );
+    assert!(
+        refused(
+            b.engine
+                .handle_forwarded("pi-a", mk("node_api", "listen", "pi-a", "n3"))
+                .await
+        ),
+        "another setting"
+    );
+    let ok = mk("node_api", "api", "pi-a", "n4");
+    assert!(matches!(
+        b.engine.handle_forwarded("pi-a", ok.clone()).await,
+        ForwardedAnswer::NodeApi(_)
+    ));
+    assert!(
+        refused(b.engine.handle_forwarded("pi-a", ok).await),
+        "a replay"
+    );
 }
