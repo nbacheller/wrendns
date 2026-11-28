@@ -151,15 +151,49 @@ pub(crate) fn enforce_dns_providers(
     enforce(cluster, Feature::DnsProviders)
 }
 
-/// The gated tables a start-up hold can keep out: locations (with the clients' pins) and DNS
-/// providers. A node holds the set of them its configuration uses.
-pub(crate) const HOLDABLE: [Feature; 2] = [Feature::Locations, Feature::DnsProviders];
+/// REQ: CLD-904 (T36.10b step b5, ADR-1115) - whether a configuration holds a `delegated` DNS
+/// provider, which a build that does not know the kind refuses (the whole table with it).
+pub(crate) fn uses_dns_delegation(cfg: &wrendns_config::Config) -> bool {
+    cfg.dns_provider
+        .iter()
+        .any(wrendns_config::DnsProviderConfig::is_delegated)
+}
+
+/// REQ: CLD-904 (T36.10b step b5, ADR-1115) - the gate for a `delegated` provider: `Ok` unless
+/// `after` holds a delegated entry that `before` did not hold as it is now (new or changed) while a
+/// member's build does not announce `dns_provider_delegation`. Used by the API write path (dry
+/// runs too) and by the file loader on a reload. Removing a delegated entry is never held.
+pub(crate) fn enforce_dns_delegation(
+    cluster: Option<&Cluster>,
+    before: &wrendns_config::Config,
+    after: &wrendns_config::Config,
+) -> Result<(), String> {
+    let new = after
+        .dns_provider
+        .iter()
+        .filter(|p| p.is_delegated())
+        .any(|p| !before.dns_provider.iter().any(|b| b == p));
+    if !new {
+        return Ok(());
+    }
+    enforce(cluster, Feature::DnsProviderDelegation)
+}
+
+/// The gated tables a start-up hold can keep out: locations (with the clients' pins), DNS
+/// providers and, apart, the delegated ones among them. A node holds the set of them its
+/// configuration uses.
+pub(crate) const HOLDABLE: [Feature; 3] = [
+    Feature::Locations,
+    Feature::DnsProviders,
+    Feature::DnsProviderDelegation,
+];
 
 /// Whether `cfg` uses the gated table of `f` (only the [`HOLDABLE`] ones).
 pub(crate) fn uses(cfg: &wrendns_config::Config, f: Feature) -> bool {
     match f {
         Feature::Locations => uses_locations(cfg),
         Feature::DnsProviders => uses_dns_providers(cfg),
+        Feature::DnsProviderDelegation => uses_dns_delegation(cfg),
         _ => false,
     }
 }
@@ -174,15 +208,17 @@ pub(crate) fn strip(cfg: &mut wrendns_config::Config, f: Feature) {
     match f {
         Feature::Locations => strip_locations(cfg),
         Feature::DnsProviders => cfg.dns_provider.clear(),
+        Feature::DnsProviderDelegation => cfg.dns_provider.retain(|p| !p.is_delegated()),
         _ => {}
     }
 }
 
-/// A [`HOLDABLE`] feature as a bit (locations 1, DNS providers 2).
+/// A [`HOLDABLE`] feature as a bit (locations 1, DNS providers 2, delegated providers 4).
 const fn bit(f: Feature) -> u8 {
     match f {
         Feature::Locations => 1,
         Feature::DnsProviders => 2,
+        Feature::DnsProviderDelegation => 4,
         _ => 0,
     }
 }

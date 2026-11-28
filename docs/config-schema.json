@@ -1896,7 +1896,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "credential_ref": {
-          "description": "The name of the stored secret holding the credential (a client secret, an API token, an\naccess key pair as `id:secret`, a TSIG key). Required; the table has no inline credential\nand no credential file.",
+          "description": "The name of the stored secret holding the credential (a client secret, an API token, an\naccess key pair as `id:secret`, a TSIG key). Required for every kind but `delegated`, which\nstores no credential and refuses one; the table has no inline credential and no credential\nfile.",
           "type": [
             "string",
             "null"
@@ -1904,7 +1904,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "delegated_to": {
-          "description": "The challenge name is delegated: the domain whose zone this entry serves, where the\noperator's `_acme-challenge` CNAME points (design 4.4). A domain name, not the zone itself.",
+          "description": "A `delegated` entry only: the name of the other provider entry whose zone takes the\nchallenge TXT. The operator's `_acme-challenge.<slug>.<domain>` CNAME at this entry's DNS\nhost points to `<slug>.<that entry's zone>` (design 4.4, ADR-1115). Refused on every other\nkind.",
           "type": [
             "string",
             "null"
@@ -1933,7 +1933,7 @@
           "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]*$"
         },
         "kind": {
-          "description": "`azure_dns`, `cloudflare`, `route53` or `rfc2136`.",
+          "description": "`azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated` (no `godaddy` kind exists).",
           "$ref": "#/$defs/DnsProviderKind"
         },
         "max_writes_per_hour": {
@@ -2020,6 +2020,11 @@
           "description": "RFC 2136 dynamic update, signed with TSIG (RFC 8945), for any self-run authoritative server.",
           "type": "string",
           "const": "rfc2136"
+        },
+        {
+          "description": "A DNS host with no usable API (`GoDaddy` and others, ADR-1084): nothing is stored for it. The\noperator creates one `_acme-challenge` CNAME there by hand, and `delegated_to` names the\nprovider entry whose zone takes the challenge TXT (ADR-1115). There is no `godaddy` kind.",
+          "type": "string",
+          "const": "delegated"
         }
       ]
     },

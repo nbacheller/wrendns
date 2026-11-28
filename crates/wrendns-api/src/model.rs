@@ -1346,7 +1346,7 @@ pub struct LocationList {
 #[serde(rename_all = "camelCase")]
 pub struct DnsProviderEntry {
     pub name: String,
-    /// `azure_dns`, `cloudflare`, `route53` or `rfc2136`.
+    /// `azure_dns`, `cloudflare`, `route53`, `rfc2136` or `delegated`.
     pub kind: String,
     /// The zone the provider serves.
     pub zone: String,
@@ -1373,6 +1373,63 @@ pub struct DnsProviderEntry {
     /// cluster member's build does not know DNS providers yet).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// A `delegated` entry only: the record to create at its DNS host and whether this node has
+    /// verified it (T36.10b step b5, ADR-1115).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<DnsProviderDelegation>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5, ADR-1115) - the delegation of a `delegated` provider: the
+/// provider that holds the validation zone and the CNAME records the operator creates by hand at
+/// the DNS host, each with this node's latest check.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderDelegation {
+    /// The provider entry that takes the challenge TXT (`delegated_to`).
+    pub validation_provider: String,
+    /// That provider's zone (absent when the entry it names is missing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_zone: Option<String>,
+    /// The CNAME records to create, one per location in the zone; one template with `<slug>` when
+    /// no location is in the zone yet.
+    pub records: Vec<DnsProviderDelegationRecord>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5) - one `_acme-challenge` CNAME to create at the DNS host, and
+/// whether this node has verified it at the zone's authoritative servers.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderDelegationRecord {
+    /// The location it is for; absent for the template shown before any location uses the zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The name to create the CNAME at: `_acme-challenge.<slug>.<domain>` (no trailing dot).
+    pub name: String,
+    /// What it points to: `<slug>.<validation zone>` (no trailing dot).
+    pub target: String,
+    /// `true` verified, `false` not verified; absent when this node has not checked it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    /// Why, from the latest check on this node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When that check ran, Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
+}
+
+/// REQ: CLD-904 (T36.10b step b5) - the answer of `POST /api/v1/dns-providers/{name}/verify`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsProviderVerifyResult {
+    /// Every record is verified.
+    pub ok: bool,
+    /// Each record with its verdict and reason.
+    pub records: Vec<DnsProviderDelegationRecord>,
+    /// A sentence for the card (for example, that no location uses the zone yet so nothing was
+    /// checked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// REQ: CLD-904 (T36.10b) - the DNS providers (`GET /api/v1/dns-providers`).
