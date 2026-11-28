@@ -1178,7 +1178,8 @@ pub(crate) async fn delete_router(
 /// otherwise. Admins only: an operator or an agent is refused (403). A provider the config files
 /// define is read-only here (409 `set_by_file`). The first provider waits until every cluster
 /// member's build knows the table (409 `upgrade_required`, naming the member; dry runs too). The
-/// table is stored and validated; nothing calls a provider yet.
+/// table is stored and validated; a provider is written to only through the write engine (dry run
+/// until the first successful test, an ownership ledger, rate limits).
 #[utoipa::path(put, path = "/api/v1/dns-providers/{name}", tag = "config",
     params(("name" = String, Path, description = "The name."), DryRun),
     request_body = Object,

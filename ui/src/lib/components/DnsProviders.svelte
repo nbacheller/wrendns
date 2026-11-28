@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <script lang="ts">
   // REQ: CLD-904 (T36.10b, ADR-1084, ADR-1104) — Settings → DNS providers (admins): the accounts at a
-  // DNS host (or a self-run server) the node may one day write record sets in. The table is stored and
-  // validated here; NOTHING CALLS A PROVIDER YET (the provider code, the test action and the write
-  // engine come next), and the page says so. A provider added, changed or removed applies on every node
+  // DNS host (or a self-run server) the node may write record sets in. T36.10b step b3 (CLD-919) adds the
+  // **Test** button (the scope the credential has, never the secret; the first success ends the entry's
+  // dry run), the dry-run state, and the **Records** table with **Adopt** (the node changes or deletes only
+  // record sets it made or an admin adopted). A kind with no provider code yet says so. A provider added, changed or removed applies on every node
   // within seconds; one the configuration file defines is read-only ("set by file"); the credential goes
   // through SecretField (write-only, stored by name) and the entry holds only its name; the first
   // provider waits until every cluster member's build knows the table, and the refusal is shown in the
@@ -32,6 +33,50 @@
   let loaded = $state(false);
   let error = $state<unknown>(null);
   let notice = $state('');
+
+  // REQ: CLD-904, CLD-919 — the latest Test of each provider, and its record sets with their owners.
+  let testing = $state<string | null>(null);
+  let tests = $state<Record<string, S['DnsProviderTestResult'] | { failed: string }>>({});
+  let recordsOf = $state<Record<string, S['DnsProviderRecords'] | { failed: string }>>({});
+  let recordsBusy = $state<string | null>(null);
+
+  async function runTest(name: string) {
+    testing = name;
+    try {
+      tests[name] = await api.testDnsProvider(name);
+    } catch (e) {
+      tests[name] = { failed: e instanceof ApiError ? e.message : 'The test could not be run.' };
+    } finally {
+      testing = null;
+    }
+    // The first success ended dry run: show the entry as it is now.
+    await load();
+  }
+
+  async function loadRecords(name: string) {
+    recordsBusy = name;
+    try {
+      recordsOf[name] = await api.dnsProviderRecords(name);
+    } catch (e) {
+      recordsOf[name] = { failed: e instanceof ApiError ? e.message : 'The records could not be read.' };
+    } finally {
+      recordsBusy = null;
+    }
+  }
+
+  async function adopt(name: string, r: S['DnsProviderRecord']) {
+    recordsBusy = name;
+    try {
+      await api.adoptDnsRecord(name, { name: r.name, recordType: r.recordType });
+      notice = `Adopted ${r.name} (${r.recordType}). The node may now change and delete it.`;
+    } catch (e) {
+      notice = e instanceof ApiError ? e.message : 'The record set could not be adopted.';
+    }
+    await loadRecords(name);
+  }
+
+  const failedOf = (v: unknown): string | null =>
+    v && typeof v === 'object' && 'failed' in v ? String((v as { failed: string }).failed) : null;
 
   async function load() {
     try {
@@ -218,7 +263,7 @@
     busy = true;
     try {
       await api.putDnsProvider(name, bodyOf(form));
-      notice = `Saved ${name}. It is stored and shared with the cluster; nothing calls it yet.`;
+      notice = `Saved ${name}. It is stored and shared with the cluster, and it starts in dry run until its first successful test.`;
       closeForm();
       await load();
     } catch (e) {
@@ -247,10 +292,10 @@
 <section class="card" data-testid="dnsproviders-tab">
   <h2>DNS providers<HelpButton id="dns-providers" /></h2>
   <p class="muted">
-    The accounts at a DNS host (Azure DNS, Cloudflare, Route 53) or a self-run server (RFC 2136) where WrenDNS may one day write a few record sets,
+    The accounts at a DNS host (Azure DNS, Cloudflare, Route 53) or a self-run server (RFC 2136) where WrenDNS may write a few record sets,
     such as the challenge for a certificate. Each holds only the name of a stored secret, never the credential itself, and it can be limited to one
-    name. <strong data-testid="dnsproviders-unused">Providers are not used yet:</strong> they are stored and checked here, and nothing calls them
-    until the certificate and dynamic-DNS work arrives. Every entry starts in dry run.
+    name. <strong data-testid="dnsproviders-intro">Every entry starts in dry run:</strong> changes are recorded in the audit log and none is
+    sent until the entry's first successful test. The node changes or deletes only record sets it made itself or that you adopt.
   </p>
   <ErrorNote {error} />
   {#if notice}<p class="notice" role="status" data-testid="dnsproviders-notice">{notice}</p>{/if}
@@ -378,7 +423,11 @@
         <span class="small">{kindLabel(e.kind)}</span>
         <span class="mono small">{e.zone}</span>
         {#if e.source === 'file'}<span class="badge warn" data-testid="dnsproviders-file">Set by file</span>{:else}<span class="badge">From the UI</span>{/if}
-        <span class="badge" data-testid="dnsproviders-state">Not used yet</span>
+        {#if e.state === 'not_used'}
+          <span class="badge" data-testid="dnsproviders-state">Not used yet</span>
+        {:else if e.state === 'ready'}
+          <span class="badge ok" data-testid="dnsproviders-state">Ready</span>
+        {/if}
         {#if e.dryRun}<span class="badge" data-testid="dnsproviders-dry">Dry run</span>{/if}
         {#if e.held}<span class="badge warn" data-testid="dnsproviders-card-held">Held back</span>{/if}
       </div>
@@ -390,6 +439,84 @@
           {/if}
         </li>
       </ul>
+      <p class="small muted" data-testid="dnsproviders-detail">{e.detail}</p>
+      <div class="row-actions">
+        <button type="button" class="btn" data-testid="dnsproviders-test" onclick={() => runTest(e.name)} disabled={testing !== null || e.held}>
+          {testing === e.name ? 'Testing…' : 'Test and show scope'}
+        </button>
+        <HelpButton id="dns-provider-test" />
+        {#if e.state !== 'not_used'}
+          <button type="button" class="btn" data-testid="dnsproviders-records" onclick={() => loadRecords(e.name)} disabled={recordsBusy !== null || e.held}>Records</button>
+          <HelpButton id="dns-provider-ownership" />
+        {/if}
+      </div>
+      {#if tests[e.name]}
+        {@const t = tests[e.name]}
+        <div class="test-result small" data-testid="dnsproviders-test-result" role="status">
+          {#if failedOf(t)}
+            <p class="bad-text">{failedOf(t)}</p>
+          {:else}
+            {@const r = t as S['DnsProviderTestResult']}
+            {#if r.ok}
+              <p><strong>The credential was accepted.</strong> {r.scope?.summary}</p>
+              <ul>
+                <li>Zone: <span class="mono">{r.scope?.zone}</span></li>
+                <li>Record types it may write: <span class="mono">{r.scope?.recordTypes.join(', ')}</span></li>
+                <li>
+                  {#if r.scope?.recordSets}Limited to: <span class="mono">{r.scope.recordSets.join(', ')}</span>{:else}Any record set in the zone{/if}
+                </li>
+                {#each r.scope?.notes ?? [] as n (n)}<li>{n}</li>{/each}
+              </ul>
+              {#if r.scope?.broaderThanNeeded}
+                <p class="notice warn" data-testid="dnsproviders-broad">
+                  This credential can change more than WrenDNS needs. Narrow it at the provider to the challenge names (see What to grant first when you change this provider).
+                </p>
+              {/if}
+              {#if r.dryRunCleared}
+                <p data-testid="dnsproviders-dry-ended">The first test passed, so dry run is now off: changes to record sets this node owns are sent.</p>
+              {/if}
+            {:else}
+              <p class="bad-text" data-testid="dnsproviders-test-error">{r.error}</p>
+            {/if}
+            {#if r.note}<p class="muted">{r.note}</p>{/if}
+          {/if}
+        </div>
+      {/if}
+      {#if recordsOf[e.name]}
+        {@const rs = recordsOf[e.name]}
+        <div class="small" data-testid="dnsproviders-records-table">
+          {#if failedOf(rs)}
+            <p class="bad-text">{failedOf(rs)}</p>
+          {:else}
+            {@const rec = rs as S['DnsProviderRecords']}
+            {#if rec.items.length === 0}
+              <p class="muted">No TXT, A or AAAA record sets in the zone.</p>
+            {:else}
+              <table>
+                <thead><tr><th>Name</th><th>Type</th><th>TTL</th><th>Values</th><th>Owner</th><th></th></tr></thead>
+                <tbody>
+                  {#each rec.items as r (r.name + '/' + r.recordType)}
+                    <tr data-testid="dnsproviders-record">
+                      <td class="mono">{r.name}</td>
+                      <td>{r.recordType}</td>
+                      <td>{r.ttl}</td>
+                      <td class="mono">{r.values.join(', ')}</td>
+                      <td>
+                        {#if r.owner}{r.owner === 'adopted' ? 'Adopted' : 'Created'} by {r.by}{:else}<span class="muted">Not owned: never changed or deleted</span>{/if}
+                      </td>
+                      <td>
+                        {#if !r.owner}
+                          <button type="button" class="btn" data-testid="dnsproviders-adopt" onclick={() => adopt(e.name, r)} disabled={recordsBusy !== null}>Adopt</button>
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          {/if}
+        </div>
+      {/if}
       {#if e.source === 'file'}
         <p class="small muted">The configuration file defines this provider, so it's read-only here.</p>
       {:else}
@@ -452,5 +579,19 @@
   }
   .bad-text {
     color: var(--bad);
+  }
+  .test-result,
+  table {
+    margin: 0.5rem 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 0.25rem 0.5rem;
+    border-bottom: 1px solid var(--border);
   }
 </style>

@@ -2,8 +2,9 @@
 // REQ: CLD-904, DSC-908 (T36.10b steps 1 and 2; ADR-1084, ADR-1104) — Settings → DNS providers: the
 // table stored and checked through the UI, the credential only ever a stored secret's name, the
 // gate's refusal in the form's words, a viewer without the tab and a file-defined provider read-only.
-// Runs against the suite's own server (after 1-ui.spec.ts, which creates the admin and the viewer):
-// nothing calls a provider, so nothing needs to be reachable.
+// Runs against the suite's own server (after 1-ui.spec.ts, which creates the admin and the viewer): the
+// e2e build serves an entry named fake-... with an in-memory provider (CLD-919, T36.10b step b3), so the
+// Test, Records and Adopt controls run end to end with nothing reachable.
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
 const ADMIN = { user: 'admin', pass: 'correct horse battery' };
@@ -35,7 +36,7 @@ test.describe('cld_904 DNS providers in the UI', () => {
   test('cld_904 an admin adds a provider and the secret is never shown again', async ({ browser }) => {
     const page = await signIn(browser, ADMIN);
     try {
-      await expect(page.getByTestId('dnsproviders-unused')).toContainText('not used yet');
+      await expect(page.getByTestId('dnsproviders-intro')).toContainText('starts in dry run');
       await page.getByTestId('dnsproviders-add').click();
       await page.getByRole('textbox', { name: 'Name', exact: true }).fill('cf-e2e');
       await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
@@ -62,7 +63,7 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(card).toContainText('Not used yet');
       await expect(card).toContainText('Dry run');
       await expect(card).toContainText('dns.cf-e2e.credential');
-      await expect(page.getByTestId('dnsproviders-notice')).toContainText('nothing calls it yet');
+      await expect(page.getByTestId('dnsproviders-notice')).toContainText('starts in dry run');
       // The server stored a reference: the answer names the secret and never carries a value.
       const list = await page.request.get('/api/v1/dns-providers');
       expect(list.status()).toBe(200);
@@ -79,6 +80,85 @@ test.describe('cld_904 DNS providers in the UI', () => {
       await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-e2e' })).toHaveCount(0, { timeout: 10_000 });
     } finally {
       await dropSecret(page, 'dns.cf-e2e.credential');
+      await page.close();
+    }
+  });
+
+  test('cld_904 test shows the scope and never the secret', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    try {
+      // The suite's server is the e2e build: an entry named fake-... is served by the in-memory test
+      // provider, which holds one record set nobody owns (legacy.example.net).
+      await page.getByTestId('dnsproviders-add').click();
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('fake-e2e');
+      await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
+      const secret = page.getByTestId('dnsproviders-secret');
+      await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
+      await secret.getByRole('button', { name: 'Save secret' }).click();
+      await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
+      await page.getByTestId('dnsproviders-save').click();
+      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'fake-e2e' });
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      // A new entry is in dry run, and the card says so.
+      await expect(card.getByTestId('dnsproviders-dry')).toBeVisible();
+      await expect(card.getByTestId('dnsproviders-detail')).toContainText('until the first successful test');
+      await card.getByTestId('dnsproviders-test').click();
+      const result = card.getByTestId('dnsproviders-test-result');
+      await expect(result).toContainText('The credential was accepted', { timeout: 10_000 });
+      await expect(result).toContainText('Record types it may write');
+      await expect(card.getByTestId('dnsproviders-broad')).toContainText('can change more than WrenDNS needs');
+      // The first success ended dry run.
+      await expect(card.getByTestId('dnsproviders-dry-ended')).toBeVisible();
+      await expect(card.getByTestId('dnsproviders-dry')).toHaveCount(0, { timeout: 15_000 });
+      await expect(card.getByTestId('dnsproviders-state')).toContainText('Ready');
+      // The record sets with who owns each; the one nobody owns can be adopted.
+      await card.getByTestId('dnsproviders-records').click();
+      const row = card.getByTestId('dnsproviders-record').filter({ hasText: 'legacy.example.net' });
+      await expect(row).toContainText('Not owned');
+      await row.getByTestId('dnsproviders-adopt').click();
+      await expect(card.getByTestId('dnsproviders-record').filter({ hasText: 'legacy.example.net' })).toContainText('Adopted by', { timeout: 10_000 });
+      await expect(card.getByTestId('dnsproviders-adopt')).toHaveCount(0);
+      // The secret is on no page and in no answer.
+      await expect(page.locator('body')).not.toContainText(SECRET);
+      for (const url of ['/api/v1/dns-providers', '/api/v1/dns-providers/fake-e2e/records']) {
+        const res = await page.request.get(url);
+        expect(res.status()).toBe(200);
+        expect(await res.text()).not.toContain(SECRET);
+      }
+      const audit = await page.request.get('/api/v1/audit?limit=200');
+      expect(await audit.text()).not.toContain(SECRET);
+      // Remove it.
+      await card.getByTestId('dnsproviders-delete').click();
+      await page.getByTestId('dnsproviders-delete-confirm').click();
+      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'fake-e2e' })).toHaveCount(0, { timeout: 10_000 });
+    } finally {
+      await dropSecret(page, 'dns.fake-e2e.credential');
+      await page.close();
+    }
+  });
+
+  test('cld_904 a kind with no provider code yet says so when tested', async ({ browser }) => {
+    const page = await signIn(browser, ADMIN);
+    try {
+      await page.getByTestId('dnsproviders-add').click();
+      await page.getByRole('textbox', { name: 'Name', exact: true }).fill('cf-nocode');
+      await page.getByRole('textbox', { name: 'Zone', exact: true }).fill('example.net');
+      const secret = page.getByTestId('dnsproviders-secret');
+      await secret.getByLabel('Credential', { exact: true }).fill(SECRET);
+      await secret.getByRole('button', { name: 'Save secret' }).click();
+      await expect(secret).toHaveAttribute('data-mode', 'set', { timeout: 10_000 });
+      await page.getByTestId('dnsproviders-save').click();
+      const card = page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' });
+      await expect(card).toBeVisible({ timeout: 10_000 });
+      await card.getByTestId('dnsproviders-test').click();
+      await expect(card.getByTestId('dnsproviders-test-error')).toContainText('no provider code for the `cloudflare` kind yet', { timeout: 10_000 });
+      await expect(card.getByTestId('dnsproviders-dry')).toBeVisible();
+      await expect(page.locator('body')).not.toContainText(SECRET);
+      await card.getByTestId('dnsproviders-delete').click();
+      await page.getByTestId('dnsproviders-delete-confirm').click();
+      await expect(page.getByTestId('dnsproviders-card').filter({ hasText: 'cf-nocode' })).toHaveCount(0, { timeout: 10_000 });
+    } finally {
+      await dropSecret(page, 'dns.cf-nocode.credential');
       await page.close();
     }
   });
