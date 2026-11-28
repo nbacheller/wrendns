@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // REQ: CLD-904, DSC-908 (T36.10b steps 1 and 2; ADR-1084, ADR-1104) — Settings → DNS providers: the
 // table stored and checked through the UI, the credential only ever a stored secret's name, the
 // gate's refusal in the form's words, a viewer without the tab and a file-defined provider read-only.
